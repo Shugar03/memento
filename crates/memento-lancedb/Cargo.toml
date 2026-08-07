@@ -7,9 +7,17 @@ description = "Memento RS LanceDB storage adapter: tenant-scoped tables, FTS, ve
 
 [dependencies]
 lancedb.workspace = true
-serde.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
+datafusion-common.workspace = true
+memento-domain = { path = "../memento-domain" }
+memento-ports = { path = "../memento-ports" }
+async-trait.workspace = true
 chrono.workspace = true
-uuid.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+memento-testkit = { path = "../memento-testkit" }
