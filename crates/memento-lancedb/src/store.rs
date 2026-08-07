@@ -8,9 +8,14 @@
 //! (mandatory workspace filter, REQ-MR-006).
 
 use crate::schema::{ALL_TABLES, COL_TENANT_ID, schema_for};
+use lancedb::arrow::arrow_array::{Array, RecordBatch, cast::AsArray, types::{Float32Type, TimestampNanosecondType}};
 use lancedb::connection::Connection;
 use lancedb::table::Table;
-use memento_domain::{DomainError, TenantContext, TenantId};
+use memento_domain::{
+    AgentId, ChunkId, DocId, DomainError, MemoryChunk, Provenance, SourceKind, TenantContext,
+    TenantId, WorkspaceId,
+};
+use memento_ports::SearchHit;
 use std::path::{Path, PathBuf};
 
 /// LanceDB storage adapter bound to one tenant directory.
@@ -79,7 +84,7 @@ impl LanceStore {
 
     /// Guard: every operation must carry the bound tenant's context
     /// (REQ-TA-004/005 — the context cannot be swapped per request).
-    fn ensure_tenant(&self, ctx: &TenantContext) -> Result<(), DomainError> {
+    pub(crate) fn ensure_tenant(&self, ctx: &TenantContext) -> Result<(), DomainError> {
         if ctx.tenant_id() != &self.tenant_id {
             return Err(DomainError::TenantForbidden);
         }
@@ -141,6 +146,112 @@ impl LanceStore {
             .map_err(|err| map_error("count_rows", err))?;
         Ok(count as u64)
     }
+}
+
+// --- row materialization (storage → domain) -----------------------------------
+
+fn string_at(batch: &RecordBatch, column: &str, row: usize) -> Result<String, DomainError> {
+    Ok(batch
+        .column_by_name(column)
+        .ok_or_else(|| missing_column(column))?
+        .as_string::<i32>()
+        .value(row)
+        .to_owned())
+}
+
+fn id_at<T>(batch: &RecordBatch, column: &str, row: usize) -> Result<T, DomainError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let raw = string_at(batch, column, row)?;
+    raw.parse().map_err(|err| DomainError::Internal {
+        message: format!("corrupt {column} in store: {err}"),
+    })
+}
+
+fn missing_column(name: &str) -> DomainError {
+    DomainError::Internal {
+        message: format!("result set missing column {name}"),
+    }
+}
+
+/// Reconstruct a [`MemoryChunk`] from one row of the `chunks` table. The
+/// stored row carries every REQ-MC-006 provenance field as a column, so no
+/// information is lost in the round trip.
+pub(crate) fn row_to_chunk(batch: &RecordBatch, row: usize) -> Result<MemoryChunk, DomainError> {
+    let chunk_id: ChunkId = id_at(batch, crate::schema::COL_CHUNK_ID, row)?;
+    let doc_id: DocId = id_at(batch, crate::schema::COL_DOC_ID, row)?;
+    let tenant_id: TenantId = id_at(batch, crate::schema::COL_TENANT_ID, row)?;
+    let workspace_id: WorkspaceId = id_at(batch, crate::schema::COL_WORKSPACE_ID, row)?;
+    let agent_id = AgentId::new(string_at(batch, crate::schema::COL_AGENT_ID, row)?);
+    let source: SourceKind = serde_json::from_str(&string_at(batch, crate::schema::COL_SOURCE, row)?)
+        .map_err(|err| DomainError::Internal {
+            message: format!("corrupt source_json in store: {err}"),
+        })?;
+    let created_at =
+        crate::schema::nanos_to_ts(batch.column_by_name(crate::schema::COL_CREATED_AT)
+            .ok_or_else(|| missing_column(crate::schema::COL_CREATED_AT))?
+            .as_primitive::<TimestampNanosecondType>()
+            .value(row));
+
+    let vector = batch
+        .column_by_name(crate::schema::COL_VECTOR)
+        .ok_or_else(|| missing_column(crate::schema::COL_VECTOR))?
+        .as_fixed_size_list();
+    let vector = if vector.is_null(row) {
+        None
+    } else {
+        Some(
+            vector
+                .value(row)
+                .as_primitive::<Float32Type>()
+                .values()
+                .to_vec(),
+        )
+    };
+
+    let embedding_model_version =
+        string_at(batch, crate::schema::COL_EMBEDDING_MODEL, row)?;
+    let text = string_at(batch, crate::schema::COL_TEXT, row)?;
+
+    let provenance = Provenance {
+        source,
+        doc_id,
+        chunk_id,
+        created_at,
+        embedding_model_version,
+        tenant_id,
+        workspace_id,
+        agent_id: agent_id.clone(),
+    };
+
+    Ok(MemoryChunk {
+        id: chunk_id,
+        tenant_id,
+        workspace_id,
+        agent_id,
+        doc_id,
+        text,
+        vector,
+        created_at,
+        provenance,
+    })
+}
+
+/// Reconstruct a [`SearchHit`] (chunk + retrieval score) from one row.
+pub(crate) fn row_to_search_hit(
+    batch: &RecordBatch,
+    row: usize,
+    score: f32,
+) -> Result<SearchHit, DomainError> {
+    let chunk = row_to_chunk(batch, row)?;
+    Ok(SearchHit {
+        chunk_id: chunk.id,
+        text: chunk.text,
+        score,
+        provenance: chunk.provenance,
+    })
 }
 
 /// Map a `lancedb::Error` onto the domain taxonomy (stable codes; D7).
