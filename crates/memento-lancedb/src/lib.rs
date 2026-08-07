@@ -13,6 +13,10 @@ pub mod store;
 pub mod vector;
 
 pub use fts::{MAX_TOP_K, ensure_fts_index, full_text_search};
+pub use maintenance::{
+    VersionSummary, compact, delete_chunks, delete_doc, delete_tenant, delete_workspace, erase,
+    list_versions, prune, sweep_expired, version_snapshot,
+};
 pub use schema::{
     CHUNKS, DOCS, FEEDBACK, SYMBOLS, chunks_scope, tenant_scope, workspace_scope,
 };
