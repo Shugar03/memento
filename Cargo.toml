@@ -52,8 +52,8 @@ fastembed = { version = "5.17", default-features = false, features = ["ort-load-
 text-splitter = { version = "0.32", features = ["tokenizers"] }
 # fastembed 5.x pins tokenizers to ^0.22.x; aligning the workspace pin avoids a duplicate build.
 tokenizers = "0.22"
-# --- code knowledge (git pin in T-005; repo jyjeanne/okf-rs, package okf-core; see docs/dependencies.md) ---
-okf-core = { git = "https://github.com/jyjeanne/okf-rs" }
+# --- code knowledge (git pin; repo jyjeanne/okf-rs, package okf-core; see docs/dependencies.md) ---
+okf-core = { git = "https://github.com/jyjeanne/okf-rs", rev = "42842becafac841a97555b203c2c72f39410f0fb" }
 # --- tenancy / auth / crypto ---
 argon2 = "0.5"
 rand = "0.10"

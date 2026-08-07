@@ -4462,7 +4462,7 @@ dependencies = [
 [[package]]
 name = "okf-core"
 version = "0.3.0"
-source = "git+https://github.com/jyjeanne/okf-rs#42842becafac841a97555b203c2c72f39410f0fb"
+source = "git+https://github.com/jyjeanne/okf-rs?rev=42842becafac841a97555b203c2c72f39410f0fb#42842becafac841a97555b203c2c72f39410f0fb"
 dependencies = [
  "anyhow",
  "ignore",
@@ -4473,7 +4473,7 @@ dependencies = [
 [[package]]
 name = "okf-parser"
 version = "0.3.0"
-source = "git+https://github.com/jyjeanne/okf-rs#42842becafac841a97555b203c2c72f39410f0fb"
+source = "git+https://github.com/jyjeanne/okf-rs?rev=42842becafac841a97555b203c2c72f39410f0fb#42842becafac841a97555b203c2c72f39410f0fb"
 dependencies = [
  "anyhow",
  "chrono",
