@@ -4,3 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Memento RS code-knowledge adapter over okf-rs (L1-L4 layers)."
+
+[dependencies]
+okf-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+uuid.workspace = true

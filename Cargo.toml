@@ -20,3 +20,57 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+
+[workspace.dependencies]
+# --- async runtime ---
+tokio = { version = "1.53", features = ["full"] }
+async-trait = "0.1"
+# --- serialization ---
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = { version = "1.2", features = ["derive"] }
+# --- errors ---
+anyhow = "1.0"
+thiserror = "2.0"
+# --- observability ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+# --- CLI / MCP ---
+clap = { version = "4.6", features = ["derive"] }
+rmcp = { version = "3.1", features = ["server", "transport-io"] }
+# --- storage / embeddings / parse ---
+lancedb = "0.33"
+# fastembed: text models only for the MVP (CLIP/image models deferred to phase 2 per design).
+# default-features = false: fastembed's defaults pull `image-models` (image -> zune-jpeg 0.5.15,
+# which fails to compile on rustc 1.97 — upstream bug, fixed only on the `dev` branch) and
+# `ort-download-binaries-native-tls` (no prebuilt onnxruntime for windows-gnu; native-tls would
+# need OpenSSL there). We use `ort-load-dynamic` (onnxruntime loaded at runtime — see
+# docs/dependencies.md) and `hf-hub-rustls-tls` (pure-Rust TLS). See docs/dependencies.md.
+fastembed = { version = "5.17", default-features = false, features = ["ort-load-dynamic", "hf-hub-rustls-tls"] }
+text-splitter = { version = "0.32", features = ["tokenizers"] }
+# fastembed 5.x pins tokenizers to ^0.22.x; aligning the workspace pin avoids a duplicate build.
+tokenizers = "0.22"
+# --- code knowledge (git pin in T-005; repo jyjeanne/okf-rs, package okf-core; see docs/dependencies.md) ---
+okf-core = { git = "https://github.com/jyjeanne/okf-rs" }
+# --- tenancy / auth / crypto ---
+argon2 = "0.5"
+rand = "0.10"
+sha2 = "0.11"
+# --- ids / time / fs ---
+uuid = { version = "1.24", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+time = "0.3"
+dirs = "6.0"
+# --- worker scheduling ---
+tokio-cron-scheduler = "0.15"
+# --- middleware (pinned for later use; unreferenced in batch 1) ---
+tower = "0.5"
+
+# --- dev ---
+tempfile = "3.27"
+criterion = "0.8"
+proptest = "1.11"
+assert_cmd = "2.2"
+predicates = "3.1"

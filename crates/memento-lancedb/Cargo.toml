@@ -4,3 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Memento RS LanceDB storage adapter: tenant-scoped tables, FTS, vector search and maintenance."
+
+[dependencies]
+lancedb.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
