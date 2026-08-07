@@ -8,5 +8,8 @@ description = "Memento RS core domain: tenant, workspace, chunk, provenance and 
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+# tokio: task-local tenant context (TenantContext::current / with)
+tokio.workspace = true
