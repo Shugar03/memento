@@ -225,3 +225,340 @@ impl From<DomainError> for Value {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// One constructed value per variant, so tests enumerate the whole
+    /// taxonomy without relying on any single variant's payload.
+    fn all_variants() -> Vec<DomainError> {
+        vec![
+            DomainError::TenantRequired,
+            DomainError::TenantForbidden,
+            DomainError::QuotaExceeded {
+                message: "quota".into(),
+            },
+            DomainError::EmbeddingModelMismatch {
+                expected: "e5".into(),
+                found: "bge".into(),
+            },
+            DomainError::TopKExceeded {
+                requested: 200,
+                max: 100,
+            },
+            DomainError::WorkspaceRequired,
+            DomainError::ChunkNotFound { id: ChunkId::new() },
+            DomainError::ResourceExhausted {
+                message: "batch".into(),
+            },
+            DomainError::CapacityExceeded {
+                message: "disk".into(),
+            },
+            DomainError::Internal {
+                message: "boom".into(),
+            },
+            DomainError::NotFound {
+                what: "item".into(),
+            },
+            DomainError::InvalidInput {
+                message: "bad".into(),
+            },
+            DomainError::AlreadyExists {
+                message: "dup".into(),
+            },
+            DomainError::AuthFailed,
+            DomainError::Io {
+                source: std::io::Error::other("io"),
+            },
+            DomainError::Parse {
+                message: "corrupt".into(),
+            },
+            DomainError::EmbeddingFailed {
+                message: "onnx".into(),
+            },
+            DomainError::BackupCorrupt {
+                reason: "checksum".into(),
+            },
+            DomainError::BackupVersion {
+                found: "2".into(),
+                expected: "1".into(),
+            },
+            DomainError::SubprocessTimeout {
+                command: "anydoc".into(),
+            },
+            DomainError::SubprocessStdoutOverflow {
+                bytes: 51 * 1024 * 1024,
+            },
+            DomainError::SubprocessArgvInvalid {
+                detail: "metachar".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn codes_are_stable() {
+        // Every variant maps to a hard-coded string literal (no format!).
+        // These values are the external contract: never change them.
+        let cases = [
+            (DomainError::TenantRequired, "TENANT_REQUIRED"),
+            (DomainError::TenantForbidden, "TENANT_FORBIDDEN"),
+            (
+                DomainError::QuotaExceeded {
+                    message: String::new(),
+                },
+                "QUOTA_EXCEEDED",
+            ),
+            (
+                DomainError::EmbeddingModelMismatch {
+                    expected: String::new(),
+                    found: String::new(),
+                },
+                "EMBEDDING_MODEL_MISMATCH",
+            ),
+            (
+                DomainError::TopKExceeded {
+                    requested: 1,
+                    max: 1,
+                },
+                "TOP_K_EXCEEDED",
+            ),
+            (DomainError::WorkspaceRequired, "WORKSPACE_REQUIRED"),
+            (
+                DomainError::ChunkNotFound { id: ChunkId::new() },
+                "CHUNK_NOT_FOUND",
+            ),
+            (
+                DomainError::ResourceExhausted {
+                    message: String::new(),
+                },
+                "RESOURCE_EXHAUSTED",
+            ),
+            (
+                DomainError::CapacityExceeded {
+                    message: String::new(),
+                },
+                "CAPACITY_EXCEEDED",
+            ),
+            (
+                DomainError::Internal {
+                    message: String::new(),
+                },
+                "INTERNAL",
+            ),
+            (
+                DomainError::NotFound {
+                    what: String::new(),
+                },
+                "NOT_FOUND",
+            ),
+            (
+                DomainError::InvalidInput {
+                    message: String::new(),
+                },
+                "INVALID_INPUT",
+            ),
+            (
+                DomainError::AlreadyExists {
+                    message: String::new(),
+                },
+                "ALREADY_EXISTS",
+            ),
+            (DomainError::AuthFailed, "AUTH_FAILED"),
+            (
+                DomainError::Io {
+                    source: std::io::Error::other(""),
+                },
+                "IO",
+            ),
+            (
+                DomainError::Parse {
+                    message: String::new(),
+                },
+                "PARSE",
+            ),
+            (
+                DomainError::EmbeddingFailed {
+                    message: String::new(),
+                },
+                "EMBEDDING_FAILED",
+            ),
+            (
+                DomainError::BackupCorrupt {
+                    reason: String::new(),
+                },
+                "BACKUP_CORRUPT",
+            ),
+            (
+                DomainError::BackupVersion {
+                    found: String::new(),
+                    expected: String::new(),
+                },
+                "BACKUP_VERSION",
+            ),
+            (
+                DomainError::SubprocessTimeout {
+                    command: String::new(),
+                },
+                "SUBPROCESS_TIMEOUT",
+            ),
+            (
+                DomainError::SubprocessStdoutOverflow { bytes: 0 },
+                "SUBPROCESS_STDOUT_OVERFLOW",
+            ),
+            (
+                DomainError::SubprocessArgvInvalid {
+                    detail: String::new(),
+                },
+                "SUBPROCESS_ARGV_INVALID",
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.code(), expected, "stable code for {err:?}");
+        }
+    }
+
+    #[test]
+    fn codes_are_unique() {
+        let codes: HashSet<&str> = all_variants().iter().map(DomainError::code).collect();
+        assert_eq!(
+            codes.len(),
+            all_variants().len(),
+            "every variant must have its own code (no collisions)"
+        );
+    }
+
+    #[test]
+    fn exit_codes_match_cli_contract() {
+        // REQ-CL-005: deterministic exit-code matrix shared with the CLI.
+        let cases = [
+            (
+                DomainError::Internal {
+                    message: String::new(),
+                },
+                1,
+            ),
+            (
+                DomainError::InvalidInput {
+                    message: String::new(),
+                },
+                2,
+            ),
+            (
+                DomainError::AlreadyExists {
+                    message: String::new(),
+                },
+                3,
+            ),
+            (DomainError::AuthFailed, 4),
+            (
+                DomainError::Io {
+                    source: std::io::Error::other(""),
+                },
+                5,
+            ),
+            (
+                DomainError::Parse {
+                    message: String::new(),
+                },
+                6,
+            ),
+            (
+                DomainError::EmbeddingFailed {
+                    message: String::new(),
+                },
+                7,
+            ),
+            (
+                DomainError::BackupCorrupt {
+                    reason: String::new(),
+                },
+                8,
+            ),
+            (
+                DomainError::BackupVersion {
+                    found: String::new(),
+                    expected: String::new(),
+                },
+                9,
+            ),
+            (DomainError::TenantRequired, 10),
+            (DomainError::TenantForbidden, 11),
+            (
+                DomainError::QuotaExceeded {
+                    message: String::new(),
+                },
+                12,
+            ),
+            (
+                DomainError::EmbeddingModelMismatch {
+                    expected: String::new(),
+                    found: String::new(),
+                },
+                13,
+            ),
+            (
+                DomainError::TopKExceeded {
+                    requested: 1,
+                    max: 1,
+                },
+                14,
+            ),
+            (DomainError::WorkspaceRequired, 15),
+            (
+                DomainError::ResourceExhausted {
+                    message: String::new(),
+                },
+                16,
+            ),
+            (
+                DomainError::CapacityExceeded {
+                    message: String::new(),
+                },
+                17,
+            ),
+            (
+                DomainError::NotFound {
+                    what: String::new(),
+                },
+                20,
+            ),
+            (DomainError::ChunkNotFound { id: ChunkId::new() }, 21),
+            (
+                DomainError::SubprocessTimeout {
+                    command: String::new(),
+                },
+                30,
+            ),
+            (DomainError::SubprocessStdoutOverflow { bytes: 0 }, 31),
+            (
+                DomainError::SubprocessArgvInvalid {
+                    detail: String::new(),
+                },
+                32,
+            ),
+        ];
+        let mut seen: HashSet<i32> = HashSet::new();
+        for (err, expected) in cases {
+            let code = err.exit_code();
+            assert_eq!(code, expected, "exit code for {err:?}");
+            assert!(seen.insert(code), "exit code {code} duplicated");
+            assert!(
+                (1..=255).contains(&code),
+                "exit code {code} outside OS range"
+            );
+        }
+        // The whole taxonomy is covered by the matrix above.
+        assert_eq!(seen.len(), all_variants().len());
+    }
+
+    #[test]
+    fn structured_value_keeps_code() {
+        // MCP structured errors (REQ-MS-005): the JSON payload keeps the
+        // stable code and the deterministic exit code.
+        let v: Value = DomainError::ChunkNotFound { id: ChunkId::new() }.into();
+        assert_eq!(v["code"], "CHUNK_NOT_FOUND");
+        assert_eq!(v["exit_code"], 21);
+    }
+}
