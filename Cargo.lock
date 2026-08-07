@@ -4067,13 +4067,17 @@ dependencies = [
 name = "memento-parse"
 version = "0.1.0"
 dependencies = [
- "anyhow",
+ "memento-domain",
+ "memento-ports",
+ "memento-testkit",
  "proptest",
+ "serde_json",
  "tempfile",
  "text-splitter",
- "thiserror",
  "tokenizers 0.22.2",
+ "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
