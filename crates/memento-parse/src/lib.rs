@@ -11,6 +11,7 @@
 //!   tokenizer, truncation off.
 
 pub mod anydoc;
+pub mod chunk;
 pub mod fallback;
 
 use anydoc::{ANYDOC_EXTENSIONS, AnydocClient, AnydocConfig};

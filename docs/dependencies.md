@@ -52,6 +52,12 @@ ships (CLI, MCP server, worker). Exact resolved versions live in
 3. Run the affected crate's tests plus `cargo check --workspace`.
 4. Update this table and commit the code change and the docs together.
 
+## Vendored model assets
+
+| Asset | Source | License | Why vendored |
+|---|---|---|---|
+| `crates/memento-parse/assets/spanish-tokenizer.json` | HF `dccuchile/bert-base-spanish-wwm-uncased` (tokenizer.json, ~486 KiB) | Apache-2.0 | Deterministic, offline chunking (REQ-MC-003): identical bytes on every machine ⇒ identical chunk boundaries. Embedded via `include_bytes!` (also the D6 context_fit budget tokenizer). First-run model download (ONNX) is unaffected — see `docs/ci.md`. |
+
 ## Externally blocked work
 
 - T-040+ (`memento-okf` index) depends on the okf-rs pin above.
@@ -64,6 +70,7 @@ ships (CLI, MCP server, worker). Exact resolved versions live in
 | `fastembed` | `default-features = false` + `["ort-load-dynamic", "hf-hub-rustls-tls"]` | Defaults pull `image-models` (→ `image` → `zune-jpeg` — see below) and `ort-download-binaries-native-tls` (no prebuilt onnxruntime for `x86_64-pc-windows-gnu`; native-tls needs OpenSSL on GNU). `ort-load-dynamic` loads `onnxruntime` at runtime (ship the DLL/`.so` with the app; see batch 3 model-loader task), `hf-hub-rustls-tls` is pure-Rust TLS. Text models are unconditional in fastembed 5.x. CLIP/image models stay deferred per design; re-enabling `image-models` later requires the zune-jpeg fix below first. |
 | `zune-jpeg` (transitive) | NOT patched; documented | `0.5.15` (latest stable, 2026-03-26) fails on rustc 1.97: `warn!(...)` in expression position (`mcu_prog.rs:463`). Upstream fix exists on `dev` (commit `0346b875169ed528e206441c97899d99002e17ca`, zune-image repo); only pre-release `0.5.16-rc1` (2026-08-07) exists. Recipe when needed: `[patch.crates-io] zune-jpeg = { git = "https://github.com/etemesi254/zune-image", rev = "<fixed-sha>" }`. |
 | `tokenizers` | `"0.22"` instead of `"0.23"` | fastembed 5.x requires `^0.22.2`; aligning the workspace pin avoids building two tokenizers copies. |
+| `text-splitter` | `"0.32"`, `tokenizers` feature **dropped** | The upstream `tokenizers` feature drags tokenizers `0.23` + `onig` into the tree (its `ChunkSizer` impl exists only for its own 0.23 copy), while the workspace pins 0.22 for fastembed. `memento-parse` implements `ChunkSizer` for a local wrapper (`SpanishTokenizer`, `src/chunk.rs`) over the single 0.22 copy, mirroring upstream counting semantics (padding skipped, truncation overflow accounted). |
 | `lancedb` | `"0.33"`, default features | The `native-tls` feature no longer exists in lancedb ≥0.27 (removed upstream). MVP uses local file-based stores — TLS irrelevant; revisit if remote object stores are added. |
 
 ## Environment note (Windows local builds)

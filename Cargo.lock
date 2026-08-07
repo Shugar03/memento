@@ -1090,12 +1090,6 @@ dependencies = [
 
 [[package]]
 name = "daachorse"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f55d7153ba3b507595872a3874803f07a8a81d1e888abed8e5db7da0597d6e2"
-
-[[package]]
-name = "daachorse"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db756b5eb7d81d31f31f660f4132f8cf5698de52fca144c143d0ae0cbb5f2e06"
@@ -2107,7 +2101,7 @@ dependencies = [
  "safetensors",
  "serde",
  "serde_json",
- "tokenizers 0.22.2",
+ "tokenizers",
 ]
 
 [[package]]
@@ -3774,7 +3768,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "csv",
- "daachorse 2.1.1",
+ "daachorse",
  "kanaria",
  "lindera-dictionary",
  "log",
@@ -3801,7 +3795,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "csv",
- "daachorse 2.1.1",
+ "daachorse",
  "derive_builder",
  "encoding_rs",
  "encoding_rs_io",
@@ -4075,7 +4069,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "text-splitter",
- "tokenizers 0.22.2",
+ "tokenizers",
  "tokio",
  "tracing",
  "uuid",
@@ -6039,7 +6033,6 @@ dependencies = [
  "memchr",
  "strum 0.28.0",
  "thiserror",
- "tokenizers 0.23.1",
 ]
 
 [[package]]
@@ -6160,39 +6153,6 @@ dependencies = [
  "esaxx-rs",
  "getrandom 0.3.4",
  "indicatif",
- "itertools",
- "log",
- "macro_rules_attribute",
- "monostate",
- "onig",
- "paste",
- "rand 0.9.5",
- "rayon",
- "rayon-cond",
- "regex",
- "regex-syntax",
- "serde",
- "serde_json",
- "spm_precompiled",
- "thiserror",
- "unicode-normalization-alignments",
- "unicode-segmentation",
- "unicode_categories",
-]
-
-[[package]]
-name = "tokenizers"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44e5bea67576e04b6ff8564c5d9e09c2ef0cf476502245f2f120e497769d3112"
-dependencies = [
- "ahash",
- "compact_str",
- "daachorse 1.0.1",
- "dary_heap",
- "derive_builder",
- "esaxx-rs",
- "getrandom 0.3.4",
  "itertools",
  "log",
  "macro_rules_attribute",
