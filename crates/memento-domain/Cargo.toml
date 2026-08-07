@@ -13,3 +13,10 @@ uuid.workspace = true
 chrono.workspace = true
 # tokio: task-local tenant context (TenantContext::current / with)
 tokio.workspace = true
+
+[features]
+# Test-only TenantContext constructor (TenantContext::new_for_tests), consumed by
+# memento-testkit and adapter test suites. Production builds never enable this
+# feature, so the "contexts are constructible only via the tenant resolver"
+# invariant (REQ-TA-002/005) holds for every shipped artifact.
+testkit = []

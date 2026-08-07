@@ -6,12 +6,15 @@ license.workspace = true
 description = "Memento RS shared test infrastructure: fakes, temp stores, injectable clock, fixtures."
 
 [dependencies]
-tokio.workspace = true
-serde.workspace = true
-uuid.workspace = true
+# memento-domain with the `testkit` feature: grants TenantContext::new_for_tests,
+# the only test-time construction path for a bound context (never enabled in
+# production builds of dependent crates).
+memento-domain = { path = "../memento-domain", features = ["testkit"] }
+memento-ports = { path = "../memento-ports" }
+async-trait.workspace = true
 chrono.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
-proptest.workspace = true
-criterion.workspace = true
+tokio.workspace = true

@@ -38,6 +38,19 @@ impl TenantContext {
         }
     }
 
+    /// Test-only constructor behind the `testkit` feature (design D2):
+    /// memento-testkit and adapter test suites need a bound context before the
+    /// memento-tenant resolver (batch 6) exists. The feature is never enabled
+    /// in production builds, so the resolver-only invariant still holds there.
+    #[cfg(feature = "testkit")]
+    pub fn new_for_tests(
+        tenant_id: TenantId,
+        workspace_id: WorkspaceId,
+        agent_id: AgentId,
+    ) -> Self {
+        Self::new(tenant_id, workspace_id, agent_id)
+    }
+
     /// The bound tenant id.
     pub fn tenant_id(&self) -> &TenantId {
         &self.tenant_id
