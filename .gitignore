@@ -1,0 +1,24 @@
+# Rust build artifacts
+/target/
+
+# Local data: per-tenant stores, backups, downloaded models
+/db/
+/backups/
+/models/
+
+# Environment / secrets
+.env
+
+# Editor / OS cruft
+*.swp
+
+# JS tooling (anydoc invoked via npx)
+node_modules/
+dist/
+
+# Test / coverage artifacts
+coverage/
+*.log
+
+# NOTE: Cargo.lock IS committed on purpose — this workspace ships binaries
+# (CLI, MCP server, worker) and locked builds are required.
