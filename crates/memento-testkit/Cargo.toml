@@ -1,0 +1,6 @@
+[package]
+name = "memento-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS shared test infrastructure: fakes, temp stores, injectable clock, fixtures."

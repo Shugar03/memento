@@ -1,0 +1,6 @@
+[package]
+name = "memento-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS command-line surface (clap v4)."

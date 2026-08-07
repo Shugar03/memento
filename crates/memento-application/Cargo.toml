@@ -1,0 +1,6 @@
+[package]
+name = "memento-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS application use cases: ingest, search, context_fit, feedback, delete, sweep, backup, export."

@@ -1,0 +1,6 @@
+[package]
+name = "memento-ports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS port traits: search, ingest, embed, tenant resolution, lifecycle, knowledge, parse."

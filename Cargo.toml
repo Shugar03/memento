@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/memento-domain",
+    "crates/memento-ports",
+    "crates/memento-i18n",
+    "crates/memento-lancedb",
+    "crates/memento-embed-fastembed",
+    "crates/memento-parse",
+    "crates/memento-okf",
+    "crates/memento-tenant",
+    "crates/memento-application",
+    "crates/memento-mcp",
+    "crates/memento-cli",
+    "crates/memento-worker",
+    "crates/memento-testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"

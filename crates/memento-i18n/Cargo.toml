@@ -1,0 +1,6 @@
+[package]
+name = "memento-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS bilingual (ES-first, EN-fallback) user-facing strings and error rendering."

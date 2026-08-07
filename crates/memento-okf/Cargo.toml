@@ -1,0 +1,6 @@
+[package]
+name = "memento-okf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS code-knowledge adapter over okf-rs (L1-L4 layers)."

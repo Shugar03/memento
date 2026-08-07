@@ -1,0 +1,6 @@
+[package]
+name = "memento-tenant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS tenancy: credential hashing (Argon2id), token resolution and rotation."

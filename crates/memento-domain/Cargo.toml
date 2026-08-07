@@ -1,0 +1,6 @@
+[package]
+name = "memento-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS core domain: tenant, workspace, chunk, provenance and error taxonomy."

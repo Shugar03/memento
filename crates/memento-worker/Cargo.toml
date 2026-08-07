@@ -1,0 +1,6 @@
+[package]
+name = "memento-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS background worker: retention sweep, maintenance and backups."

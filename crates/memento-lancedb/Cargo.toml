@@ -1,0 +1,6 @@
+[package]
+name = "memento-lancedb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS LanceDB storage adapter: tenant-scoped tables, FTS, vector search and maintenance."
