@@ -16,7 +16,27 @@ are not stable crates.io packages yet.
 | Name | Version / source | URL | Upgrade path |
 |---|---|---|---|
 | `okf-rs` | git `https://github.com/jyjeanne/okf-rs` @ `42842becafac841a97555b203c2c72f39410f0fb` (branch `main`, head as of 2026-08-07); resolves workspace member package **`okf-core`** (repo has 18 member crates; no package named `okf-rs`) | https://github.com/jyjeanne/okf-rs | bump `rev` in `Cargo.toml` → `[workspace.dependencies]`; verify `cargo check -p memento-okf`; update this table; commit together |
-| `@firecrawl/anydoc` | `0.1.7` (npm latest as of 2026-08-07) | https://www.npmjs.com/package/@firecrawl/anydoc | bump the pinned version in the `package.json` / `npx` invocation (batch 4); re-run `memento-parse` tests; update this table; commit together |
+| `@firecrawl/anydoc` | `0.1.7` (npm latest as of 2026-08-07) | https://www.npmjs.com/package/@firecrawl/anydoc | bump the pinned version in the `npx` invocation below; re-run `memento-parse` tests; update this table; commit together |
+
+## anydoc invocation (batch 4, T-031)
+
+The subprocess adapter (`crates/memento-parse/src/anydoc.rs`) resolves the
+converter at runtime, in order:
+
+1. `anydoc` on PATH (global `npm install -g @firecrawl/anydoc`), else
+2. the pinned npm package run shell-free through `node`:
+   `<node-dir>/node_modules/npm/bin/npx-cli.js --yes @firecrawl/anydoc@0.1.7`
+   — **version pinned in the argv**. Windows cannot spawn `.cmd` shims
+   directly (CreateProcess error 193) and `cmd /C` would reintroduce shell
+   parsing, so the resolver runs the real npx JS entry with `node.exe`;
+   argv stays positional on every platform.
+
+CLI contract mirrored: `anydoc <input-file>` writes GitHub-Flavored Markdown
+to stdout (`-o` variant unused; stdout is capped at 50 MiB). Integration
+tests use a fake binary (`memento-parse-fake-anydoc`) that mirrors this
+argv shape; the real path is exercised by the `#[ignore]`d test
+`docx_to_markdown_real_anydoc` (verified manually on the bootstrap host,
+2026-08-07).
 
 ## Crate pins (workspace)
 

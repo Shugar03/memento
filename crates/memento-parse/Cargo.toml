@@ -8,6 +8,7 @@ description = "Memento RS document parsing (anydoc subprocess + fallback) and de
 [dependencies]
 memento-domain = { path = "../memento-domain" }
 memento-ports = { path = "../memento-ports" }
+async-trait.workspace = true
 text-splitter.workspace = true
 tokenizers.workspace = true
 tokio.workspace = true
@@ -19,3 +20,10 @@ uuid.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 memento-testkit = { path = "../memento-testkit" }
+
+# Dev-only test double for the anydoc CLI (T-031): integration tests locate
+# it via env!("CARGO_BIN_EXE_memento_parse_fake_anydoc"). Never shipped.
+[[bin]]
+name = "memento-parse-fake-anydoc"
+path = "src/bin/fake_anydoc.rs"
+

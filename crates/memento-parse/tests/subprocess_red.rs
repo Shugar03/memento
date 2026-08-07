@@ -23,7 +23,6 @@
 //! Error codes are asserted by stable string code (memento-domain taxonomy,
 //! D7) so the tests document the external contract, not implementation.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use memento_domain::DomainError;
@@ -40,7 +39,7 @@ fn fake_client(
 ) -> AnydocClient {
     AnydocClient::new(AnydocConfig {
         command: AnydocCommand {
-            program: env!("CARGO_BIN_EXE_memento_parse_fake_anydoc").to_string(),
+            program: env!("CARGO_BIN_EXE_memento-parse-fake-anydoc").to_string(),
             args: Vec::new(),
             env: vec![("FAKE_ANYDOC_MODE".to_string(), mode.to_string())],
         },
@@ -130,12 +129,7 @@ async fn shell_metacharacters_rejected() {
 async fn stdout_bomb_capped() {
     let staging = TempDir::new().expect("tempdir");
     // Fake emits 8 MiB of zeros; the cap is 64 KiB → must abort mid-stream.
-    let client = fake_client(
-        "bomb",
-        Duration::from_secs(30),
-        64 * 1024,
-        &staging,
-    );
+    let client = fake_client("bomb", Duration::from_secs(30), 64 * 1024, &staging);
 
     let err = client
         .convert(b"blob", "docx")

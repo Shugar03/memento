@@ -4067,6 +4067,7 @@ dependencies = [
 name = "memento-parse"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "memento-domain",
  "memento-ports",
  "memento-testkit",
