@@ -110,7 +110,7 @@ pub mod error;
 pub mod feedback;
 pub mod tenant;
 
-pub use chunk::{MemoryChunk, Provenance, SourceKind};
+pub use chunk::{ChunkId, MemoryChunk, Provenance, SourceKind};
 pub use doc::{ArtifactKind, ChoreId, DocId, KnowledgeArtifact, KnowledgeArtifactId};
 pub use error::DomainError;
 pub use feedback::FeedbackId;
