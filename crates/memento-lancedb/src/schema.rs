@@ -18,7 +18,7 @@
 use chrono::{DateTime, Utc};
 use datafusion_common::ScalarValue;
 use lancedb::arrow::arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use lancedb::expr::{col, lit, DfExpr};
+use lancedb::expr::{DfExpr, col, lit};
 use memento_domain::{TenantId, WorkspaceId};
 use std::sync::Arc;
 

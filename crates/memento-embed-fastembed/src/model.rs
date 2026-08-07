@@ -42,9 +42,10 @@ impl FastEmbedBackend {
         let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Small)
             .with_cache_dir(cache_dir)
             .with_show_download_progress(false);
-        let model = TextEmbedding::try_new(options).map_err(|err| DomainError::EmbeddingFailed {
-            message: format!("init fastembed: {err}"),
-        })?;
+        let model =
+            TextEmbedding::try_new(options).map_err(|err| DomainError::EmbeddingFailed {
+                message: format!("init fastembed: {err}"),
+            })?;
         Ok(Self {
             model: Mutex::new(model),
         })
@@ -125,6 +126,11 @@ impl ModelLoader {
     /// Whether embeddings are enabled (`--no-embeddings` mode → false).
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// The model cache directory (design D8: `models/`).
+    pub fn cache_dir(&self) -> &PathBuf {
+        &self.cache_dir
     }
 
     /// The model version, when enabled (None in `--no-embeddings` mode).
@@ -219,7 +225,9 @@ mod tests {
         assert!(!loader.is_enabled());
         assert_eq!(loader.model_version(), None);
 
-        let out = loader.embed(&["hola"]).expect("disabled embed is not an error");
+        let out = loader
+            .embed(&["hola"])
+            .expect("disabled embed is not an error");
         assert!(out.is_none(), "explicit absent vectors (REQ-MC-004)");
     }
 
@@ -252,10 +260,16 @@ mod tests {
 
         let a = loader.backend().expect("first init");
         let b = loader.backend().expect("cached");
-        assert!(Arc::ptr_eq(a, b), "same backend instance on repeated access");
+        assert!(
+            Arc::ptr_eq(a, b),
+            "same backend instance on repeated access"
+        );
         assert_eq!(inits.load(Ordering::SeqCst), 1, "initialized exactly once");
 
-        let out = loader.embed(&["uno", "dos"]).expect("embed").expect("enabled");
+        let out = loader
+            .embed(&["uno", "dos"])
+            .expect("embed")
+            .expect("enabled");
         assert_eq!(out.len(), 2);
     }
 
@@ -285,7 +299,10 @@ mod tests {
             })
             .collect();
         for handle in handles {
-            assert!(handle.join().expect("thread"), "backend must initialize for all");
+            assert!(
+                handle.join().expect("thread"),
+                "backend must initialize for all"
+            );
         }
         assert_eq!(inits.load(Ordering::SeqCst), 1, "single-flight init");
     }

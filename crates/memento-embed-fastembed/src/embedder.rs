@@ -62,7 +62,7 @@ impl EmbedPort for FastEmbedEmbedder {
         let backend = self.loader.backend()?.clone();
         let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
 
-        let result = tokio::task::spawn_blocking(move || {
+        match tokio::task::spawn_blocking(move || {
             let mut out = Vec::with_capacity(owned.len());
             for batch in owned.chunks(MAX_BATCH) {
                 let batch_refs: Vec<&str> = batch.iter().map(String::as_str).collect();
@@ -71,11 +71,12 @@ impl EmbedPort for FastEmbedEmbedder {
             Ok::<Vec<Vec<f32>>, DomainError>(out)
         })
         .await
-        .map_err(|err| DomainError::Internal {
-            message: format!("embed task failed: {err}"),
-        })?;
-
-        result
+        {
+            Ok(result) => result,
+            Err(err) => Err(DomainError::Internal {
+                message: format!("embed task failed: {err}"),
+            }),
+        }
     }
 }
 

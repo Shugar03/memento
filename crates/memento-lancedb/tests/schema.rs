@@ -3,8 +3,8 @@
 //! Real LanceDB on a `TempStore` (memento-testkit): per-tenant dirs, the four
 //! tables, idempotent schema bootstrap, and reopen stability.
 
-use memento_lancedb::schema::{ALL_TABLES, CHUNKS, DOCS, FEEDBACK, SYMBOLS};
 use memento_lancedb::LanceStore;
+use memento_lancedb::schema::{ALL_TABLES, CHUNKS, DOCS, FEEDBACK, SYMBOLS};
 use memento_testkit::TempStore;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -33,7 +33,10 @@ async fn ensure_schema_is_idempotent() {
     let store = LanceStore::open(&ts.ctx(), ts.root()).await.expect("open");
 
     store.ensure_schema().await.expect("first ensure");
-    store.ensure_schema().await.expect("second ensure must be a no-op");
+    store
+        .ensure_schema()
+        .await
+        .expect("second ensure must be a no-op");
 
     let names = store.table_names().await.expect("table names");
     let expected = ALL_TABLES.len();
@@ -99,6 +102,9 @@ async fn foreign_context_is_rejected() {
     // A different tenant's context against this store → TENANT_FORBIDDEN
     // (defense in depth beyond the directory boundary).
     let other = TempStore::new();
-    let err = store.count_chunks(&other.ctx()).await.expect_err("must reject");
+    let err = store
+        .count_chunks(&other.ctx())
+        .await
+        .expect_err("must reject");
     assert_eq!(err.code(), memento_domain::error::CODE_TENANT_FORBIDDEN);
 }

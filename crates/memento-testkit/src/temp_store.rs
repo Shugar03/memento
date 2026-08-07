@@ -62,11 +62,7 @@ impl TempStore {
     /// A bound [`TenantContext`] for this scratch tenant (testkit feature of
     /// memento-domain; production code has no such constructor).
     pub fn ctx(&self) -> TenantContext {
-        TenantContext::new_for_tests(
-            self.tenant_id,
-            self.workspace_id,
-            self.agent_id.clone(),
-        )
+        TenantContext::new_for_tests(self.tenant_id, self.workspace_id, self.agent_id.clone())
     }
 }
 

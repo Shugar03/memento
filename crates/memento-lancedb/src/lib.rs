@@ -17,15 +17,13 @@ pub use maintenance::{
     VersionSummary, compact, delete_chunks, delete_doc, delete_tenant, delete_workspace, erase,
     list_versions, prune, sweep_expired, version_snapshot,
 };
-pub use schema::{
-    CHUNKS, DOCS, FEEDBACK, SYMBOLS, chunks_scope, tenant_scope, workspace_scope,
-};
+pub use schema::{CHUNKS, DOCS, FEEDBACK, SYMBOLS, chunks_scope, tenant_scope, workspace_scope};
 pub use store::{LanceStore, map_error};
 pub use vector::{add_chunks_batch, ensure_vector_index, vector_search};
 
 use async_trait::async_trait;
 use futures::TryStreamExt;
-use lancedb::arrow::arrow_array::{RecordBatch};
+use lancedb::arrow::arrow_array::RecordBatch;
 use lancedb::expr::{col, lit};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use memento_domain::{ChunkId, DomainError, MemoryChunk, TenantContext};
@@ -67,7 +65,8 @@ impl SearchPort for LanceStore {
             // query text itself; memento-application composes the real hybrid
             // path through the adapter's public vector_search/fts methods.
             return Err(DomainError::InvalidInput {
-                message: "hybrid search requires the application embedding layer (rrf_enabled)".into(),
+                message: "hybrid search requires the application embedding layer (rrf_enabled)"
+                    .into(),
             });
         }
         crate::fts::full_text_search(
@@ -90,7 +89,8 @@ impl SearchPort for LanceStore {
         let table = self.table(schema::CHUNKS).await?;
         // Tenant-scoped (REQ-MR-005): a chunk id from another tenant simply
         // does not resolve inside this store.
-        let filter = schema::tenant_scope(ctx.tenant_id()).and(col(schema::COL_CHUNK_ID).eq(lit(id.to_string())));
+        let filter = schema::tenant_scope(ctx.tenant_id())
+            .and(col(schema::COL_CHUNK_ID).eq(lit(id.to_string())));
         let stream = table
             .query()
             .only_if_expr(filter)
@@ -105,7 +105,7 @@ impl SearchPort for LanceStore {
             .map_err(|err| store::map_error("get_chunk", err))?;
 
         for batch in &batches {
-            for row in 0..batch.num_rows() {
+            if let Some(row) = (0..batch.num_rows()).next() {
                 return Ok(Some(store::row_to_chunk(batch, row)?));
             }
         }
@@ -124,19 +124,16 @@ pub async fn fetch_search_hits(
         return Ok(Vec::new());
     }
     let table = store.table(schema::CHUNKS).await?;
-    let filter = schema::tenant_scope(ctx.tenant_id())
-        .and(lancedb::expr::is_in(
-            col(schema::COL_CHUNK_ID),
-            ids.iter()
-                .map(|id| lit(id.to_string()))
-                .collect::<Vec<_>>(),
-        ));
-        let stream = table
-            .query()
-            .only_if_expr(filter)
-            .execute()
-            .await
-            .map_err(|err| store::map_error("fetch_search_hits", err))?;
+    let filter = schema::tenant_scope(ctx.tenant_id()).and(lancedb::expr::is_in(
+        col(schema::COL_CHUNK_ID),
+        ids.iter().map(|id| lit(id.to_string())).collect::<Vec<_>>(),
+    ));
+    let stream = table
+        .query()
+        .only_if_expr(filter)
+        .execute()
+        .await
+        .map_err(|err| store::map_error("fetch_search_hits", err))?;
     let batches: Vec<RecordBatch> = stream
         .try_collect()
         .await

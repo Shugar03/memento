@@ -21,6 +21,6 @@ pub mod stub_embed;
 pub mod temp_store;
 
 pub use clock::TestClock;
-pub use fixtures::{accent_pairs, long_spanish_doc, spanish_corpus, SPANISH_CORPUS};
-pub use stub_embed::{deterministic_embed, StubEmbedPort};
+pub use fixtures::{SPANISH_CORPUS, accent_pairs, long_spanish_doc, spanish_corpus};
+pub use stub_embed::{StubEmbedPort, deterministic_embed};
 pub use temp_store::TempStore;

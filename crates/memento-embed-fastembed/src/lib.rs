@@ -1,4 +1,4 @@
-﻿//! memento-embed-fastembed — embedding adapter (design D1/D8).
+//! memento-embed-fastembed — embedding adapter (design D1/D8).
 //!
 //! MultilingualE5Small (384 dims) via fastembed with `ort-load-dynamic`
 //! (no prebuilt onnxruntime for windows-gnu — see docs/dependencies.md).
@@ -10,4 +10,6 @@ pub mod embedder;
 pub mod model;
 
 pub use embedder::{FastEmbedEmbedder, MAX_TEXTS_PER_CALL};
-pub use model::{EMBEDDING_DIM, MAX_BATCH, MODEL_VERSION, EmbeddingBackend, FastEmbedBackend, ModelLoader};
+pub use model::{
+    EMBEDDING_DIM, EmbeddingBackend, FastEmbedBackend, MAX_BATCH, MODEL_VERSION, ModelLoader,
+};

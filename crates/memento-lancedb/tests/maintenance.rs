@@ -54,7 +54,9 @@ async fn open_store(ts: &TempStore) -> LanceStore {
 }
 
 async fn insert(store: &LanceStore, ts: &TempStore, chunks: &[MemoryChunk]) {
-    add_chunks_batch(store, &ts.ctx(), chunks).await.expect("insert");
+    add_chunks_batch(store, &ts.ctx(), chunks)
+        .await
+        .expect("insert");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -83,10 +85,12 @@ async fn delete_by_chunk_id_removes_all_kinds() {
     assert!(gone.is_none(), "deleted chunk must be gone");
 
     // Siblings survive.
-    assert!(SearchPort::get_chunk(&store, &ts.ctx(), &chunks[0].id)
-        .await
-        .expect("get")
-        .is_some());
+    assert!(
+        SearchPort::get_chunk(&store, &ts.ctx(), &chunks[0].id)
+            .await
+            .expect("get")
+            .is_some()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -104,7 +108,9 @@ async fn delete_by_doc_id_removes_only_that_doc() {
     ];
     insert(&store, &ts, &chunks).await;
 
-    let report = delete_doc(&store, &ts.ctx(), &doc_a).await.expect("delete doc");
+    let report = delete_doc(&store, &ts.ctx(), &doc_a)
+        .await
+        .expect("delete doc");
     assert_eq!(report.deleted_count, 2);
 
     assert_eq!(store.count_chunks(&ts.ctx()).await.expect("count"), 1);
@@ -128,7 +134,9 @@ async fn delete_by_workspace_isolates_workspaces() {
     ];
     insert(&store, &ts, &chunks).await;
 
-    let report = delete_workspace(&store, &ts.ctx(), &ws_b).await.expect("delete ws");
+    let report = delete_workspace(&store, &ts.ctx(), &ws_b)
+        .await
+        .expect("delete ws");
     assert_eq!(report.deleted_count, 1);
 
     assert_eq!(store.count_chunks(&ts.ctx()).await.expect("count"), 1);
@@ -150,18 +158,27 @@ async fn delete_by_tenant_is_complete() {
     ];
     insert(&store, &ts, &chunks).await;
 
-    let report = delete_tenant(&store, &ts.ctx()).await.expect("delete tenant");
+    let report = delete_tenant(&store, &ts.ctx())
+        .await
+        .expect("delete tenant");
     assert_eq!(report.deleted_count, 2);
     assert_eq!(store.count_chunks(&ts.ctx()).await.expect("count"), 0);
 
     // Erase path via the LifecyclePort with the tenant scope.
     let ts2 = TempStore::new();
     let store2 = open_store(&ts2).await;
-    insert(&store2, &ts2, &[chunk(&ts2, "otro", *ts2.workspace_id(), DocId::new())]).await;
+    insert(
+        &store2,
+        &ts2,
+        &[chunk(&ts2, "otro", *ts2.workspace_id(), DocId::new())],
+    )
+    .await;
     let report = LifecyclePort::delete(
         &store2,
         &ts2.ctx(),
-        DeleteScope::Tenant { id: *ts2.tenant_id() },
+        DeleteScope::Tenant {
+            id: *ts2.tenant_id(),
+        },
     )
     .await
     .expect("port delete tenant");
@@ -184,7 +201,10 @@ async fn purge_chain_makes_data_unrecoverable() {
     // Snapshot the version BEFORE the purge chain: the deleted rows must be
     // visible there (time travel) — this is why delete alone is NOT erasure.
     let versions_before = list_versions(&store, &ts.ctx()).await.expect("versions");
-    assert!(versions_before.len() >= 2, "insert + add = at least 2 versions");
+    assert!(
+        versions_before.len() >= 2,
+        "insert + add = at least 2 versions"
+    );
 
     delete_chunks(&store, &ts.ctx(), &[chunks[0].id, chunks[1].id])
         .await
@@ -209,7 +229,11 @@ async fn purge_chain_makes_data_unrecoverable() {
 
     // Only the current version remains.
     let versions_after = list_versions(&store, &ts.ctx()).await.expect("versions");
-    assert_eq!(versions_after.len(), 1, "all old versions pruned: {versions_after:?}");
+    assert_eq!(
+        versions_after.len(),
+        1,
+        "all old versions pruned: {versions_after:?}"
+    );
 
     // The old version can no longer be checked out — unrecoverable.
     let err = version_snapshot(&store, &ts.ctx(), old.version)
@@ -275,12 +299,20 @@ async fn sweep_expired_removes_old_keeps_new() {
     let ws = *ts.workspace_id();
     let now = Utc::now();
 
-    let old = chunk_at(&ts, "reliquia del pasado", ws, DocId::new(), now - Duration::days(40));
+    let old = chunk_at(
+        &ts,
+        "reliquia del pasado",
+        ws,
+        DocId::new(),
+        now - Duration::days(40),
+    );
     let fresh = chunk_at(&ts, "noticia reciente", ws, DocId::new(), now);
     insert(&store, &ts, &[old, fresh]).await;
 
     let cutoff = now - Duration::days(30);
-    let report = sweep_expired(&store, &ts.ctx(), cutoff).await.expect("sweep");
+    let report = sweep_expired(&store, &ts.ctx(), cutoff)
+        .await
+        .expect("sweep");
     assert_eq!(report.expired_count, 1);
 
     assert_eq!(store.count_chunks(&ts.ctx()).await.expect("count"), 1);
@@ -299,7 +331,9 @@ async fn cross_tenant_delete_scope_is_forbidden() {
     let err = LifecyclePort::delete(
         &store,
         &ts.ctx(),
-        DeleteScope::Tenant { id: *other.tenant_id() },
+        DeleteScope::Tenant {
+            id: *other.tenant_id(),
+        },
     )
     .await
     .expect_err("foreign tenant scope must fail");
@@ -319,7 +353,9 @@ async fn erase_chain_leaves_zero_searchable() {
     )
     .await;
 
-    let report = LifecyclePort::erase(&store, &ts.ctx()).await.expect("erase");
+    let report = LifecyclePort::erase(&store, &ts.ctx())
+        .await
+        .expect("erase");
     assert_eq!(report.deleted_count, 1);
 
     // Searches are zero after the full chain.

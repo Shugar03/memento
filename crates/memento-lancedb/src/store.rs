@@ -8,7 +8,11 @@
 //! (mandatory workspace filter, REQ-MR-006).
 
 use crate::schema::{ALL_TABLES, COL_TENANT_ID, schema_for};
-use lancedb::arrow::arrow_array::{Array, RecordBatch, cast::AsArray, types::{Float32Type, TimestampNanosecondType}};
+use lancedb::arrow::arrow_array::{
+    Array, RecordBatch,
+    cast::AsArray,
+    types::{Float32Type, TimestampNanosecondType},
+};
 use lancedb::connection::Connection;
 use lancedb::table::Table;
 use memento_domain::{
@@ -50,8 +54,7 @@ impl LanceStore {
             .join(tenant_id.to_string())
             .join("lancedb");
 
-        std::fs::create_dir_all(&lancedb_dir)
-            .map_err(|source| DomainError::Io { source })?;
+        std::fs::create_dir_all(&lancedb_dir).map_err(|source| DomainError::Io { source })?;
 
         // Raw local path, NO `file://` scheme: on Windows the url crate turns
         // `file://C:/...` into `file:///C:/...` (host-less form), which the
@@ -185,15 +188,19 @@ pub(crate) fn row_to_chunk(batch: &RecordBatch, row: usize) -> Result<MemoryChun
     let tenant_id: TenantId = id_at(batch, crate::schema::COL_TENANT_ID, row)?;
     let workspace_id: WorkspaceId = id_at(batch, crate::schema::COL_WORKSPACE_ID, row)?;
     let agent_id = AgentId::new(string_at(batch, crate::schema::COL_AGENT_ID, row)?);
-    let source: SourceKind = serde_json::from_str(&string_at(batch, crate::schema::COL_SOURCE, row)?)
-        .map_err(|err| DomainError::Internal {
-            message: format!("corrupt source_json in store: {err}"),
-        })?;
-    let created_at =
-        crate::schema::nanos_to_ts(batch.column_by_name(crate::schema::COL_CREATED_AT)
+    let source: SourceKind =
+        serde_json::from_str(&string_at(batch, crate::schema::COL_SOURCE, row)?).map_err(
+            |err| DomainError::Internal {
+                message: format!("corrupt source_json in store: {err}"),
+            },
+        )?;
+    let created_at = crate::schema::nanos_to_ts(
+        batch
+            .column_by_name(crate::schema::COL_CREATED_AT)
             .ok_or_else(|| missing_column(crate::schema::COL_CREATED_AT))?
             .as_primitive::<TimestampNanosecondType>()
-            .value(row));
+            .value(row),
+    );
 
     let vector = batch
         .column_by_name(crate::schema::COL_VECTOR)
@@ -211,8 +218,7 @@ pub(crate) fn row_to_chunk(batch: &RecordBatch, row: usize) -> Result<MemoryChun
         )
     };
 
-    let embedding_model_version =
-        string_at(batch, crate::schema::COL_EMBEDDING_MODEL, row)?;
+    let embedding_model_version = string_at(batch, crate::schema::COL_EMBEDDING_MODEL, row)?;
     let text = string_at(batch, crate::schema::COL_TEXT, row)?;
 
     let provenance = Provenance {

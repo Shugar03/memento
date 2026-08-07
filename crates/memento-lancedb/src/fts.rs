@@ -18,8 +18,8 @@ use crate::store::{LanceStore, map_error, row_to_search_hit};
 use futures::TryStreamExt;
 use lancedb::arrow::arrow_array::{RecordBatch, cast::AsArray, types::Float32Type};
 use lancedb::expr::{col, lit};
-use lancedb::index::scalar::{FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::index::Index;
+use lancedb::index::scalar::{FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use memento_domain::{DomainError, TenantContext, WorkspaceId};
 use memento_ports::{SearchFilters, SearchHit};
@@ -99,11 +99,10 @@ pub async fn full_text_search(
             scope = scope.and(col(COL_DOC_ID).eq(lit(doc_id.to_string())));
         }
         if let Some(source) = &f.source {
-            let source_json = serde_json::to_string(source).map_err(|err| {
-                DomainError::Internal {
+            let source_json =
+                serde_json::to_string(source).map_err(|err| DomainError::Internal {
                     message: format!("serialize source filter: {err}"),
-                }
-            })?;
+                })?;
             scope = scope.and(col(COL_SOURCE).eq(lit(source_json)));
         }
     }
@@ -127,10 +126,8 @@ pub async fn full_text_search(
     for batch in &batches {
         let scores = batch
             .column_by_name("_score")
-            .ok_or_else(|| {
-                DomainError::Internal {
-                    message: "FTS result set missing _score column".into(),
-                }
+            .ok_or_else(|| DomainError::Internal {
+                message: "FTS result set missing _score column".into(),
             })?
             .as_primitive::<Float32Type>();
         for row in 0..batch.num_rows() {

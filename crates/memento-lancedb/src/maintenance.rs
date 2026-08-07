@@ -19,9 +19,7 @@
 //! [`LanceStore::erase`] runs the chain for the whole tenant; the worker
 //! (batch 10) and the erasure use case (batch 7) reuse these primitives.
 
-use crate::schema::{
-    ALL_TABLES, CHUNKS, COL_CHUNK_ID, COL_DOC_ID, created_before, tenant_scope,
-};
+use crate::schema::{ALL_TABLES, CHUNKS, COL_CHUNK_ID, COL_DOC_ID, created_before, tenant_scope};
 use crate::store::{LanceStore, map_error, row_to_chunk};
 use futures::TryStreamExt;
 use lancedb::arrow::arrow_array::RecordBatch;
@@ -131,8 +129,8 @@ pub async fn delete_workspace(
         .num_deleted_rows as usize;
 
     let docs = store.table(crate::schema::DOCS).await?;
-    let docs_filter =
-        crate::schema::tenant_scope(ctx.tenant_id()).and(crate::schema::workspace_scope(workspace_id));
+    let docs_filter = crate::schema::tenant_scope(ctx.tenant_id())
+        .and(crate::schema::workspace_scope(workspace_id));
     deleted += docs
         .delete(&docs_filter)
         .await
@@ -149,12 +147,20 @@ pub async fn delete_workspace(
 }
 
 /// Delete EVERYTHING in the tenant (the erase flow's first step, REQ-CG-001).
-pub async fn delete_tenant(store: &LanceStore, ctx: &TenantContext) -> Result<DeleteReport, DomainError> {
+pub async fn delete_tenant(
+    store: &LanceStore,
+    ctx: &TenantContext,
+) -> Result<DeleteReport, DomainError> {
     store.ensure_tenant(ctx)?;
     let scope = tenant_scope(ctx.tenant_id());
 
     let mut deleted = 0usize;
-    for table_name in [CHUNKS, crate::schema::DOCS, crate::schema::FEEDBACK, crate::schema::SYMBOLS] {
+    for table_name in [
+        CHUNKS,
+        crate::schema::DOCS,
+        crate::schema::FEEDBACK,
+        crate::schema::SYMBOLS,
+    ] {
         let table = store.table(table_name).await?;
         deleted += table
             .delete(&scope)

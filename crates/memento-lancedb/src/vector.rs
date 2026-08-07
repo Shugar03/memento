@@ -97,12 +97,9 @@ pub async fn vector_search(
             .ok_or_else(|| missing_column("_distance"))?
             .as_primitive::<Float32Type>();
         for row in 0..batch.num_rows() {
-            let id: ChunkId = ids
-                .value(row)
-                .parse()
-                .map_err(|_| DomainError::Internal {
-                    message: "corrupt chunk_id in store".into(),
-                })?;
+            let id: ChunkId = ids.value(row).parse().map_err(|_| DomainError::Internal {
+                message: "corrupt chunk_id in store".into(),
+            })?;
             let distance = distances.value(row);
             out.push((id, 1.0 / (1.0 + distance)));
         }
@@ -179,7 +176,10 @@ fn chunks_to_batch(chunks: &[MemoryChunk]) -> Result<RecordBatch, DomainError> {
                     .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
-                chunks.iter().map(|c| c.doc_id.to_string()).collect::<Vec<_>>(),
+                chunks
+                    .iter()
+                    .map(|c| c.doc_id.to_string())
+                    .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
                 chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
@@ -192,11 +192,12 @@ fn chunks_to_batch(chunks: &[MemoryChunk]) -> Result<RecordBatch, DomainError> {
                     })
                     .collect::<Vec<_>>(),
             )),
-            Arc::new(FixedSizeListArray::from_iter_primitive::<
-                Float32Type,
-                _,
-                _,
-            >(vectors, EMBEDDING_DIM as i32)),
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                    vectors,
+                    EMBEDDING_DIM as i32,
+                ),
+            ),
             Arc::new(StringArray::from(
                 chunks
                     .iter()

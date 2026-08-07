@@ -38,7 +38,9 @@ fn chunk(ts: &TempStore, text: &str, workspace_id: WorkspaceId, doc_id: DocId) -
 }
 
 async fn open_store(ts: &TempStore) -> LanceStore {
-    let store = LanceStore::open(&ts.ctx(), ts.root()).await.expect("open store");
+    let store = LanceStore::open(&ts.ctx(), ts.root())
+        .await
+        .expect("open store");
     store.ensure_schema().await.expect("ensure schema");
     store
 }
@@ -124,7 +126,9 @@ async fn foreign_chunk_returns_none() {
     let doc = DocId::new();
 
     let c = chunk(&ts, "Chunk del tenant A.", ws, doc);
-    add_chunks_batch(&store, &ts.ctx(), &[c.clone()]).await.expect("add");
+    add_chunks_batch(&store, &ts.ctx(), std::slice::from_ref(&c))
+        .await
+        .expect("add");
 
     // A foreign tenant's store (different dir) cannot see tenant A's chunk.
     let foreign = TempStore::new();
@@ -147,7 +151,9 @@ async fn vector_search_returns_ranked() {
         chunk(&ts, "motor de combustión interna", ws, doc),
         chunk(&ts, "fermentación de malta y cebada", ws, doc),
     ];
-    add_chunks_batch(&store, &ts.ctx(), &chunks).await.expect("add");
+    add_chunks_batch(&store, &ts.ctx(), &chunks)
+        .await
+        .expect("add");
 
     let query_vec = deterministic_embed("cerveza artesanal lúpulo", 384);
     let ranked = vector_search(&store, &ts.ctx(), &query_vec, &ws, 3)
@@ -173,7 +179,9 @@ async fn search_filters_by_workspace() {
         chunk(&ts, "presupuesto anual del equipo", ws_a, doc_a),
         chunk(&ts, "presupuesto anual de marketing", ws_b, doc_b),
     ];
-    add_chunks_batch(&store, &ts.ctx(), &chunks).await.expect("add");
+    add_chunks_batch(&store, &ts.ctx(), &chunks)
+        .await
+        .expect("add");
 
     let hits = full_text_search(&store, &ts.ctx(), "presupuesto", &ws_a, 10, None)
         .await
@@ -230,7 +238,9 @@ async fn accent_insensitive_search_matches() {
 
     // Accented text stored; unaccented query must match (ascii_folding).
     let c = chunk(&ts, "La información debe ser accesible.", ws, doc);
-    add_chunks_batch(&store, &ts.ctx(), &[c.clone()]).await.expect("add");
+    add_chunks_batch(&store, &ts.ctx(), std::slice::from_ref(&c))
+        .await
+        .expect("add");
 
     let hits = full_text_search(&store, &ts.ctx(), "informacion", &ws, 10, None)
         .await
@@ -247,7 +257,13 @@ async fn hybrid_flag_errors_until_application_layer() {
 
     // REQ-MR-003: hybrid needs the application embedding layer; the port
     // surfaces a structured error until T-061 wires the real composition.
-    let q = SearchQuery { query: "algo".into(), top_k: 5, workspace_id: ws, rrf_enabled: true, filters: None };
+    let q = SearchQuery {
+        query: "algo".into(),
+        top_k: 5,
+        workspace_id: ws,
+        rrf_enabled: true,
+        filters: None,
+    };
     let err = SearchPort::search(&store, &ts.ctx(), q)
         .await
         .expect_err("hybrid not servable by the port alone");
