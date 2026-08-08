@@ -42,6 +42,8 @@
 
 pub mod audit;
 pub mod context_fit;
+pub mod delete;
+pub mod feedback;
 pub mod ingest;
 pub mod search;
 
