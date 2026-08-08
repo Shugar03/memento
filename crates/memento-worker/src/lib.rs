@@ -18,3 +18,4 @@
 //! * [`startup`] — process-bound tenant resolution + worker `AppService`.
 
 pub mod scheduler;
+pub mod sweep;
