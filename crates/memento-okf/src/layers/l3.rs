@@ -185,6 +185,24 @@ impl L3Graph {
         self.callees.clear();
         self.module_imports.clear();
 
+        let module_kind = ConceptKind::Module.as_str();
+        let package_kind = ConceptKind::Package.as_str();
+        let is_module = |n: &GraphNode| n.kind == module_kind || n.kind == package_kind;
+
+        // File → containing module id: okf emits exactly one module concept
+        // per file (module_path convention), so this map is unambiguous.
+        // Aggregating call edges to module granularity gives a real module
+        // dependency graph even though the pinned okf-rs only emits
+        // `Imports` toward synthetic `external/*` ids.
+        let mut file_module: HashMap<&str, &str> = HashMap::new();
+        for node in self.nodes.values() {
+            if is_module(node) {
+                file_module
+                    .entry(node.file.as_str())
+                    .or_insert(node.id.as_str());
+            }
+        }
+
         for edge in &self.edges {
             match edge.kind {
                 EdgeKind::Calls => {
@@ -196,10 +214,25 @@ impl L3Graph {
                         .entry(edge.target.clone())
                         .or_default()
                         .push(edge.source.clone());
+                    // Module-level aggregation of cross-module calls.
+                    let source_module = self
+                        .nodes
+                        .get(&edge.source)
+                        .and_then(|n| file_module.get(n.file.as_str()));
+                    let target_module = self
+                        .nodes
+                        .get(&edge.target)
+                        .and_then(|n| file_module.get(n.file.as_str()));
+                    if let (Some(from), Some(to)) = (source_module, target_module)
+                        && from != to
+                    {
+                        self.module_imports
+                            .entry(from.to_string())
+                            .or_default()
+                            .push(to.to_string());
+                    }
                 }
                 EdgeKind::Imports => {
-                    let module_kind = ConceptKind::Module.as_str();
-                    let package_kind = ConceptKind::Package.as_str();
                     let is_module = |id: &str| {
                         self.nodes
                             .get(id)
@@ -289,8 +322,9 @@ impl L3Graph {
         out
     }
 
-    /// Internal module→module import edges, deterministic order
-    /// (REQ-CK-007 dependency view).
+    /// Internal module→module dependency edges (imports between modules
+    /// plus call edges aggregated to module granularity), deterministic
+    /// order (REQ-CK-007 dependency view).
     pub fn module_edges(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for (source, targets) in &self.module_imports {
@@ -374,6 +408,11 @@ impl L3Graph {
 
     pub fn nodes_len(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Every edge in (source, target, kind) order (the dump's edge list).
+    pub fn edges(&self) -> impl Iterator<Item = &GraphEdge> {
+        self.edges.iter()
     }
 
     pub fn edges_len(&self) -> usize {
@@ -543,6 +582,35 @@ mod tests {
         ];
         let graph = L3Graph::from_concepts(&concepts);
         assert!(graph.dependency_cycles().is_empty());
+    }
+
+    #[test]
+    fn cross_module_call_cycle_is_detected() {
+        // okf-rs emits Imports toward synthetic external ids, so the real
+        // module dependency signal for pinned okf is CROSS-MODULE CALLS:
+        // a.rs::run -> b.rs::helper -> a.rs::bootstrap is a module cycle.
+        let mut concepts = vec![
+            module_concept("m/a", "a", vec![]),
+            module_concept("m/b", "b", vec![]),
+            fn_concept("f/run", "run", vec![calls("f/run", "f/helper")]),
+            fn_concept("f/helper", "helper", vec![calls("f/helper", "f/bootstrap")]),
+            fn_concept("f/bootstrap", "bootstrap", vec![]),
+        ];
+        // Functions must live in a module-mapped file: run/bootstrap in
+        // a.rs, helper in b.rs (module concepts own the same files).
+        concepts[2].location.file = "a.rs".into();
+        concepts[3].location.file = "b.rs".into();
+        concepts[4].location.file = "a.rs".into();
+
+        let graph = L3Graph::from_concepts(&concepts);
+        assert_eq!(
+            graph.module_edges(),
+            vec![
+                ("m/a".to_string(), "m/b".to_string()),
+                ("m/b".to_string(), "m/a".to_string()),
+            ]
+        );
+        assert_eq!(graph.dependency_cycles(), vec!["m/a -> m/b -> m/a"]);
     }
 
     #[test]
