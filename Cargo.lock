@@ -4048,14 +4048,21 @@ dependencies = [
 name = "memento-okf"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "memento-domain",
+ "memento-lancedb",
+ "memento-ports",
+ "memento-testkit",
  "okf-analyzer",
  "okf-core",
  "okf-generator",
  "okf-parser",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
