@@ -336,8 +336,9 @@ fn report(rows: u64) -> DeleteReport {
     }
 }
 
-/// Chunk ids matching a tenant-scoped filter (used to cascade into feedback).
-async fn chunk_ids_for(
+/// Chunk ids matching a tenant-scoped filter (used to cascade into feedback
+/// and by the application layer's dedup probe / doc existence checks).
+pub(crate) async fn chunk_ids_for(
     store: &LanceStore,
     filter: lancedb::expr::DfExpr,
 ) -> Result<Vec<ChunkId>, DomainError> {

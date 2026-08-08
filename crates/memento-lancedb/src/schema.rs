@@ -55,6 +55,9 @@ pub const COL_PROJECT_ID: &str = "project_id";
 pub const COL_KIND: &str = "kind";
 pub const COL_LOCATION: &str = "location";
 pub const COL_SIGNATURE: &str = "signature";
+/// Content hash of the ingested input, tenant-scoped (REQ-MC-005 idempotency
+/// probe; lives on the docs table so `MemoryChunk` stays domain-clean).
+pub const COL_CONTENT_HASH: &str = "content_hash";
 
 /// Embedding dimension for the chunks vector column (E5-small, 384d).
 pub const EMBEDDING_DIM: usize = 384;
@@ -105,15 +108,18 @@ pub fn chunks_schema() -> SchemaRef {
 }
 
 /// `docs` table schema: document metadata written by the ingest pipeline.
+/// `content_hash` (REQ-MC-005) is the tenant-scoped idempotency key: the
+/// dedup probe scans this column and re-ingests reference the stored rows.
 pub fn docs_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new(COL_DOC_ID, text(), false),
         Field::new(COL_TENANT_ID, text(), false),
         Field::new(COL_WORKSPACE_ID, text(), false),
         Field::new(COL_AGENT_ID, text(), false),
-        Field::new(COL_TITLE, text(), false),
+        Field::new(COL_TITLE, text(), true),
         Field::new(COL_SOURCE, text(), false),
         Field::new(COL_CREATED_AT, ts(), false),
+        Field::new(COL_CONTENT_HASH, text(), false),
     ]))
 }
 

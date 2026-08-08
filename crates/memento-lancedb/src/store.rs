@@ -153,7 +153,11 @@ impl LanceStore {
 
 // --- row materialization (storage → domain) -----------------------------------
 
-fn string_at(batch: &RecordBatch, column: &str, row: usize) -> Result<String, DomainError> {
+pub(crate) fn string_at(
+    batch: &RecordBatch,
+    column: &str,
+    row: usize,
+) -> Result<String, DomainError> {
     Ok(batch
         .column_by_name(column)
         .ok_or_else(|| missing_column(column))?
@@ -162,7 +166,7 @@ fn string_at(batch: &RecordBatch, column: &str, row: usize) -> Result<String, Do
         .to_owned())
 }
 
-fn id_at<T>(batch: &RecordBatch, column: &str, row: usize) -> Result<T, DomainError>
+pub(crate) fn id_at<T>(batch: &RecordBatch, column: &str, row: usize) -> Result<T, DomainError>
 where
     T: std::str::FromStr,
     T::Err: std::fmt::Display,
@@ -173,7 +177,7 @@ where
     })
 }
 
-fn missing_column(name: &str) -> DomainError {
+pub(crate) fn missing_column(name: &str) -> DomainError {
     DomainError::Internal {
         message: format!("result set missing column {name}"),
     }

@@ -140,7 +140,7 @@ pub async fn ensure_vector_index(store: &LanceStore) -> Result<(), DomainError> 
 }
 
 /// Build a `RecordBatch` with the `chunks` schema from domain chunks.
-fn chunks_to_batch(chunks: &[MemoryChunk]) -> Result<RecordBatch, DomainError> {
+pub(crate) fn chunks_to_batch(chunks: &[MemoryChunk]) -> Result<RecordBatch, DomainError> {
     let schema = chunks_schema();
     let vectors: Vec<Option<Vec<Option<f32>>>> = chunks
         .iter()
