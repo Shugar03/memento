@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Memento RS background worker: retention sweep, maintenance and backups."
 
+[[bin]]
+name = "memento-worker"
+path = "src/main.rs"
+
 [dependencies]
 # The worker is a separate process over the application use cases: it opens
 # the bound tenant (REQ-TA-002/003) and drives sweep/maintenance/backup.

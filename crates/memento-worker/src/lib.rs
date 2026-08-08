@@ -20,4 +20,5 @@
 pub mod backup_job;
 pub mod maintenance;
 pub mod scheduler;
+pub mod startup;
 pub mod sweep;
