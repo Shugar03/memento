@@ -42,6 +42,7 @@
 
 pub mod audit;
 pub mod backup;
+pub mod code;
 pub mod context_fit;
 pub mod delete;
 pub mod erase;
