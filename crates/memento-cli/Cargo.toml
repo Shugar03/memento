@@ -5,7 +5,21 @@ edition.workspace = true
 license.workspace = true
 description = "Memento RS command-line surface (clap v4)."
 
+[[bin]]
+name = "memento"
+path = "src/main.rs"
+
 [dependencies]
+memento-domain = { path = "../memento-domain" }
+memento-ports = { path = "../memento-ports" }
+memento-i18n = { path = "../memento-i18n" }
+memento-application = { path = "../memento-application" }
+memento-tenant = { path = "../memento-tenant" }
+memento-parse = { path = "../memento-parse" }
+memento-embed-fastembed = { path = "../memento-embed-fastembed" }
+memento-okf = { path = "../memento-okf" }
+# stats/code-status inspection reads adapter counters directly (REQ-CL-006).
+memento-lancedb = { path = "../memento-lancedb" }
 clap.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -18,3 +32,4 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+tempfile.workspace = true
