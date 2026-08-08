@@ -19,9 +19,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::McpServer;
 use crate::errors::ToolError;
 use crate::source_label;
-use crate::McpServer;
 
 /// Default candidate count when the client omits `top_k` (REQ-MR-001: the
 /// store default is 20).
@@ -29,11 +29,7 @@ const DEFAULT_TOP_K: usize = 20;
 
 /// `0` means "not provided" for MCP clients — normalize to the default.
 fn top_k_or_default(top_k: usize) -> usize {
-    if top_k == 0 {
-        DEFAULT_TOP_K
-    } else {
-        top_k
-    }
+    if top_k == 0 { DEFAULT_TOP_K } else { top_k }
 }
 
 fn parse_workspace(raw: &str) -> Result<WorkspaceId, ToolError> {
@@ -331,34 +327,29 @@ impl McpServer {
     ) -> Result<Json<DeleteOutput>, ToolError> {
         let scope = match p.scope.as_str() {
             "chunk" => {
-                let id = p
-                    .id
-                    .as_deref()
-                    .ok_or_else(|| ToolError(DomainError::InvalidInput {
+                let id = p.id.as_deref().ok_or_else(|| {
+                    ToolError(DomainError::InvalidInput {
                         message: "delete scope 'chunk' requires an id".into(),
-                    }))?;
+                    })
+                })?;
                 DeleteScope::Chunk {
                     id: parse_chunk(id)?,
                 }
             }
             "doc" => {
-                let id = p
-                    .id
-                    .as_deref()
-                    .ok_or_else(|| ToolError(DomainError::InvalidInput {
+                let id = p.id.as_deref().ok_or_else(|| {
+                    ToolError(DomainError::InvalidInput {
                         message: "delete scope 'doc' requires an id".into(),
-                    }))?;
-                DeleteScope::Doc {
-                    id: parse_doc(id)?,
-                }
+                    })
+                })?;
+                DeleteScope::Doc { id: parse_doc(id)? }
             }
             "workspace" => {
-                let id = p
-                    .id
-                    .as_deref()
-                    .ok_or_else(|| ToolError(DomainError::InvalidInput {
+                let id = p.id.as_deref().ok_or_else(|| {
+                    ToolError(DomainError::InvalidInput {
                         message: "delete scope 'workspace' requires an id".into(),
-                    }))?;
+                    })
+                })?;
                 DeleteScope::Workspace {
                     id: parse_workspace(id)?,
                 }
@@ -381,7 +372,7 @@ impl McpServer {
                     message: format!(
                         "scope must be one of 'chunk', 'doc', 'workspace', 'tenant', got: {other}"
                     ),
-                }))
+                }));
             }
         };
         let report = self.app.delete(&self.ctx, scope).await?;
@@ -467,8 +458,8 @@ fn ingest_output(result: IngestResult) -> IngestOutput {
 mod tests {
     use crate::McpServer;
     use memento_application::{AppService, SystemClock};
-    use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
     use memento_parse::ParseService;
+    use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
     use memento_testkit::{StubEmbedPort, TempStore};
     use rmcp::model::CallToolRequestParams;
     use rmcp::{ClientHandler, ServiceExt};
@@ -509,10 +500,7 @@ mod tests {
     ) {
         let (server_half, client_half) = tokio::io::duplex(1 << 20);
         let task = tokio::spawn(async move {
-            let running = server
-                .serve(server_half)
-                .await
-                .expect("server handshake");
+            let running = server.serve(server_half).await.expect("server handshake");
             let _ = running.waiting().await;
         });
         let client = TestClient
@@ -580,10 +568,7 @@ mod tests {
         assert_eq!(hits[0]["chunk_id"], chunk_ids[0]);
         assert_eq!(hits[0]["provenance"]["workspace_id"], ws);
         assert_eq!(hits[0]["provenance"]["source"], "text");
-        assert_eq!(
-            hits[0]["provenance"]["agent_id"],
-            ts.agent_id().to_string()
-        );
+        assert_eq!(hits[0]["provenance"]["agent_id"], ts.agent_id().to_string());
 
         // get_chunk → chunk text + provenance; unknown id → null.
         let chunk = client
@@ -695,8 +680,7 @@ mod tests {
             .expect("search ok");
         let hit_v = text_of(&hit);
         assert_eq!(
-            hit_v["hits"][0]["provenance"]["source"],
-            "markdown",
+            hit_v["hits"][0]["provenance"]["source"], "markdown",
             "document source recorded"
         );
 
@@ -720,8 +704,7 @@ mod tests {
             .await
             .expect("structured error result");
         assert_eq!(err.is_error, Some(true));
-        let v: Value =
-            serde_json::from_str(&err.content[0].as_text().unwrap().text).expect("json");
+        let v: Value = serde_json::from_str(&err.content[0].as_text().unwrap().text).expect("json");
         assert_eq!(v["code"], "INVALID_INPUT");
 
         // Unknown chunk feedback → CHUNK_NOT_FOUND (REQ-ML-001).
@@ -732,8 +715,7 @@ mod tests {
             ))
             .await
             .expect("structured error result");
-        let v: Value =
-            serde_json::from_str(&err.content[0].as_text().unwrap().text).expect("json");
+        let v: Value = serde_json::from_str(&err.content[0].as_text().unwrap().text).expect("json");
         assert_eq!(v["code"], "CHUNK_NOT_FOUND");
         // Bilingual payload present (REQ-MS-004).
         assert!(!v["message_es"].as_str().unwrap().is_empty());

@@ -15,8 +15,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::errors::ToolError;
 use crate::McpServer;
+use crate::errors::ToolError;
 
 /// Default artifact count for `code.search` when the client omits `limit`.
 const DEFAULT_SEARCH_LIMIT: usize = 20;
@@ -125,9 +125,7 @@ impl McpServer {
         Parameters(p): Parameters<SymbolParams>,
     ) -> Result<Json<SymbolsOutput>, ToolError> {
         let port = self.app.code(&self.ctx).await?;
-        let symbols = port
-            .callers_of(&self.ctx, &p.project_id, &p.symbol)
-            .await?;
+        let symbols = port.callers_of(&self.ctx, &p.project_id, &p.symbol).await?;
         Ok(Json(SymbolsOutput { symbols }))
     }
 
@@ -138,9 +136,7 @@ impl McpServer {
         Parameters(p): Parameters<SymbolParams>,
     ) -> Result<Json<SymbolsOutput>, ToolError> {
         let port = self.app.code(&self.ctx).await?;
-        let symbols = port
-            .callees_of(&self.ctx, &p.project_id, &p.symbol)
-            .await?;
+        let symbols = port.callees_of(&self.ctx, &p.project_id, &p.symbol).await?;
         Ok(Json(SymbolsOutput { symbols }))
     }
 
@@ -226,8 +222,8 @@ mod tests {
     use crate::McpServer;
     use memento_application::{AppService, SystemClock};
     use memento_okf::OkfIndex;
-    use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
     use memento_parse::ParseService;
+    use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
     use memento_testkit::{StubEmbedPort, TempStore};
     use rmcp::model::CallToolRequestParams;
     use rmcp::{ClientHandler, ServiceExt};
@@ -270,10 +266,7 @@ mod tests {
     ) {
         let (server_half, client_half) = tokio::io::duplex(1 << 20);
         let task = tokio::spawn(async move {
-            let running = server
-                .serve(server_half)
-                .await
-                .expect("server handshake");
+            let running = server.serve(server_half).await.expect("server handshake");
             let _ = running.waiting().await;
         });
         let client = TestClient
@@ -406,7 +399,10 @@ mod tests {
         // dependencies + cycle detection (REQ-CK-007): the cross-module
         // call aggregates to a module edge a → b.
         let deps = client
-            .call_tool(call("code.dependencies", json!({ "project_id": project_id })))
+            .call_tool(call(
+                "code.dependencies",
+                json!({ "project_id": project_id }),
+            ))
             .await
             .expect("deps ok");
         let v = text_of(&deps);
@@ -436,10 +432,7 @@ mod tests {
 
         // graph_dump (REQ-CK-009): valid JSON, referential integrity.
         let dump = client
-            .call_tool(call(
-                "code.graph_dump",
-                json!({ "project_id": project_id }),
-            ))
+            .call_tool(call("code.graph_dump", json!({ "project_id": project_id })))
             .await
             .expect("dump ok");
         assert_ne!(dump.is_error, Some(true));
@@ -479,8 +472,7 @@ mod tests {
             .await
             .expect("structured error result");
         assert_eq!(err.is_error, Some(true));
-        let v: Value =
-            serde_json::from_str(&err.content[0].as_text().unwrap().text).expect("json");
+        let v: Value = serde_json::from_str(&err.content[0].as_text().unwrap().text).expect("json");
         assert_eq!(v["code"], "NOT_FOUND");
         assert!(
             v["detail"].as_str().unwrap().contains("code index"),
