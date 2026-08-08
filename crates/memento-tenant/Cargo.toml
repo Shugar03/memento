@@ -7,10 +7,15 @@ description = "Memento RS tenancy: credential hashing (Argon2id), token resoluti
 
 [dependencies]
 argon2.workspace = true
-rand.workspace = true
+rand_core.workspace = true
+memento-domain = { path = "../memento-domain", features = ["tenant-resolver"] }
+memento-ports = { path = "../memento-ports" }
+async-trait.workspace = true
 dirs.workspace = true
-serde.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
+sha2.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

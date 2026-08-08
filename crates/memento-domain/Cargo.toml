@@ -20,3 +20,8 @@ tokio.workspace = true
 # feature, so the "contexts are constructible only via the tenant resolver"
 # invariant (REQ-TA-002/005) holds for every shipped artifact.
 testkit = []
+# Production TenantContext constructor (TenantContext::new). memento-tenant is
+# the ONLY crate that enables this feature (the resolver is the sole producer of
+# a bound context, REQ-TA-002/005); every other crate compiles memento-domain
+# without it, keeping the constructor crate-private.
+tenant-resolver = []
