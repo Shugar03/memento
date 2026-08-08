@@ -41,9 +41,11 @@
 //!   T-067.
 
 pub mod audit;
+pub mod backup;
 pub mod context_fit;
 pub mod delete;
 pub mod erase;
+pub mod export;
 pub mod feedback;
 pub mod ingest;
 pub mod search;
