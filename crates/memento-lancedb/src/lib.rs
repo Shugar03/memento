@@ -15,9 +15,7 @@ pub mod store;
 pub mod symbols;
 pub mod vector;
 
-pub use docs::{
-    DocRecord, all_docs, chunk_ids_by_doc, find_doc, find_doc_by_hash, upsert_doc,
-};
+pub use docs::{DocRecord, all_docs, chunk_ids_by_doc, find_doc, find_doc_by_hash, upsert_doc};
 pub use feedback::{FeedbackRecord, add_feedback, all_feedback, feedback_for_chunk};
 pub use fts::{MAX_TOP_K, ensure_fts_index, full_text_search};
 pub use maintenance::{
