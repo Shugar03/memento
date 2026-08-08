@@ -28,3 +28,5 @@ anyhow.workspace = true
 
 [dev-dependencies]
 memento-testkit = { path = "../memento-testkit" }
+assert_cmd.workspace = true
+predicates.workspace = true
