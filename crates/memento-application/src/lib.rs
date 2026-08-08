@@ -46,6 +46,8 @@ pub mod delete;
 pub mod feedback;
 pub mod ingest;
 pub mod search;
+pub mod sweep;
+pub mod tenant_config;
 
 use crate::audit::AuditLogger;
 use memento_domain::{DomainError, TenantContext};
