@@ -17,6 +17,7 @@
 //! * [`backup_job`] — backup job over `AppService::backup` (T-092).
 //! * [`startup`] — process-bound tenant resolution + worker `AppService`.
 
+pub mod backup_job;
 pub mod maintenance;
 pub mod scheduler;
 pub mod sweep;
