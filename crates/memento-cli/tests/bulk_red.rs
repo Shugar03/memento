@@ -57,11 +57,22 @@ fn escape_via_dotdot_component_rejected() {
     let (_dir, root) = temp_root();
     let nested = root.join("sub");
     std::fs::create_dir_all(&nested).expect("mkdir");
-    // A real file physically outside the root (reached via `sub/..`).
-    let outside = root.join("outside.txt");
-    std::fs::write(&outside, b"secret").expect("write");
+    // A real file physically OUTSIDE the root, reached from inside it via
+    // `sub/../../<outside-name>/outside.txt`.
+    let outside_dir = tempfile::tempdir().expect("outside tempdir");
+    let outside_name = outside_dir
+        .path()
+        .file_name()
+        .expect("outside name")
+        .to_string_lossy()
+        .to_string();
+    std::fs::write(outside_dir.path().join("outside.txt"), b"secret").expect("write");
 
-    let escaped = nested.join("..").join("outside.txt");
+    let escaped = nested
+        .join("..")
+        .join("..")
+        .join(&outside_name)
+        .join("outside.txt");
     let err = canonical_within(&root, &escaped).expect_err("escape rejected");
     assert_eq!(err.code(), "INVALID_INPUT", "stable code: {err}");
     assert!(
@@ -73,7 +84,13 @@ fn escape_via_dotdot_component_rejected() {
     let inside = nested.join("inside.txt");
     std::fs::write(&inside, b"ok").expect("write");
     let canonical = canonical_within(&root, &inside).expect("inside allowed");
-    assert!(canonical.starts_with(&root), "canonical under root");
+    // Compare canonical-to-canonical (on Windows `canonicalize` returns
+    // `\\?\`-verbatim paths).
+    let canonical_root = root.canonicalize().expect("canonical root");
+    assert!(
+        canonical.starts_with(&canonical_root),
+        "canonical under root"
+    );
 }
 
 #[cfg(unix)]

@@ -7,7 +7,7 @@
 //! boundary). Workspaces are NOT bound: they are per-call parameters
 //! (mandatory workspace filter, REQ-MR-006).
 
-use crate::schema::{ALL_TABLES, COL_TENANT_ID, schema_for};
+use crate::schema::{ALL_TABLES, COL_TENANT_ID, COL_WORKSPACE_ID, schema_for};
 use lancedb::arrow::arrow_array::{
     Array, RecordBatch,
     cast::AsArray,
@@ -143,6 +143,26 @@ impl LanceStore {
         self.ensure_tenant(ctx)?;
         let table = self.table(crate::schema::CHUNKS).await?;
         let filter = format!("{COL_TENANT_ID} = '{}'", ctx.tenant_id());
+        let count = table
+            .count_rows(Some(filter))
+            .await
+            .map_err(|err| map_error("count_rows", err))?;
+        Ok(count as u64)
+    }
+
+    /// Chunk count scoped to one workspace of the bound tenant (stats,
+    /// REQ-CL-006 scenario: "chunk counts per workspace").
+    pub async fn count_chunks_workspace(
+        &self,
+        ctx: &TenantContext,
+        workspace_id: &WorkspaceId,
+    ) -> Result<u64, DomainError> {
+        self.ensure_tenant(ctx)?;
+        let table = self.table(crate::schema::CHUNKS).await?;
+        let filter = format!(
+            "{COL_TENANT_ID} = '{}' AND {COL_WORKSPACE_ID} = '{workspace_id}'",
+            ctx.tenant_id()
+        );
         let count = table
             .count_rows(Some(filter))
             .await
