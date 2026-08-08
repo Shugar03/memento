@@ -17,6 +17,7 @@
 
 use crate::layers::l1;
 use crate::layers::l2::L2SymbolIndex;
+use crate::layers::l3::L3Graph;
 use crate::project_id::project_id_from_path;
 use memento_domain::{DomainError, TenantContext};
 use memento_lancedb::{LanceStore, SymbolInput};
@@ -53,6 +54,10 @@ pub struct IndexReport {
     pub concept_count: usize,
     /// Distinct symbol names in the L2 index (0 when no mirror was written).
     pub symbol_count: usize,
+    /// Nodes in the persisted L3 graph (0 when no graph was written).
+    pub graph_node_count: usize,
+    /// Edges in the persisted L3 graph (0 when no graph was written).
+    pub graph_edge_count: usize,
     /// Wall-clock duration of the whole run.
     pub duration_ms: u64,
 }
@@ -98,6 +103,8 @@ async fn analyze_and_write(
         files_skipped: skipped,
         concept_count: 0,
         symbol_count: 0,
+        graph_node_count: 0,
+        graph_edge_count: 0,
         duration_ms: 0,
     };
 
@@ -164,6 +171,14 @@ pub async fn index_project_with_mirror(
     memento_lancedb::replace_symbols(store, ctx, &report.project_id, &rows).await?;
 
     report.symbol_count = l2.len();
+
+    // L3: relationship graph, persisted as graph.json (REQ-CK-009 dump
+    // source; loaded at query time by the knowledge port).
+    let l3 = L3Graph::from_concepts(&concepts);
+    l3.save(&bundles_root.join(&report.project_id).join("graph.json"))?;
+    report.graph_node_count = l3.nodes_len();
+    report.graph_edge_count = l3.edges_len();
+
     Ok(report)
 }
 
@@ -389,5 +404,49 @@ mod tests {
             .await
             .unwrap();
         assert!(none.is_empty());
+    }
+
+    /// T-042: the L3 graph persists as graph.json with a real call chain
+    /// (entry → mid → leaf) and survives a load round-trip.
+    #[tokio::test]
+    async fn graph_persists_with_real_call_chain() {
+        use crate::layers::l3::L3Graph;
+        use memento_lancedb::LanceStore;
+        use memento_testkit::TempStore;
+
+        let ts = TempStore::new();
+        let store = LanceStore::open(&ts.ctx(), ts.root()).await.unwrap();
+        store.ensure_schema().await.unwrap();
+        let ctx = ts.ctx();
+
+        let repo = tempfile::tempdir().unwrap();
+        let bundles = tempfile::tempdir().unwrap();
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        fs::write(
+            repo.path().join("src/chain.rs"),
+            "fn entry() { mid(); }\nfn mid() { leaf(); }\nfn leaf() {}\n",
+        )
+        .unwrap();
+
+        let report = index_project_with_mirror(&ctx, repo.path(), bundles.path(), &store)
+            .await
+            .unwrap();
+        assert_eq!(report.files_indexed, 1);
+        assert_eq!(report.graph_node_count, 4, "module + 3 functions");
+        assert_eq!(report.graph_edge_count, 2, "entry->mid, mid->leaf");
+
+        let path = bundles.path().join(&report.project_id).join("graph.json");
+        let graph = L3Graph::load(&path).unwrap();
+        assert!(graph.referential_integrity(), "REQ-CK-009");
+        let leaf = graph
+            .nodes()
+            .find(|n| n.name == "leaf")
+            .map(|n| n.id.clone())
+            .expect("leaf concept present");
+        let depth2 = graph.callers_of(&leaf, 2);
+        assert!(
+            depth2.iter().any(|id| id.ends_with("/entry")),
+            "entry reaches leaf at depth 2: {depth2:?}"
+        );
     }
 }
