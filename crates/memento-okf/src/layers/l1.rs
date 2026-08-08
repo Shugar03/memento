@@ -62,48 +62,7 @@ pub fn bundle_md_files(dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use okf_parser::{ConceptKind, Language, Location};
-
-    fn sample_concepts() -> Vec<Concept> {
-        vec![
-            Concept {
-                id: "functions/alpha".into(),
-                kind: ConceptKind::Function,
-                language: Language::Rust,
-                name: "alpha".into(),
-                qualified_name: "crate::alpha".into(),
-                description: Some("first function".into()),
-                location: Location {
-                    file: "src/lib.rs".into(),
-                    start_line: 1,
-                    end_line: 3,
-                },
-                signature: Some("pub fn alpha() -> u32".into()),
-                tags: vec![],
-                is_public: true,
-                generated_at: None,
-                relationships: vec![],
-            },
-            Concept {
-                id: "modules/lib".into(),
-                kind: ConceptKind::Module,
-                language: Language::Rust,
-                name: "lib".into(),
-                qualified_name: "crate".into(),
-                description: None,
-                location: Location {
-                    file: "src/lib.rs".into(),
-                    start_line: 1,
-                    end_line: 1,
-                },
-                signature: None,
-                tags: vec![],
-                is_public: true,
-                generated_at: None,
-                relationships: vec![],
-            },
-        ]
-    }
+    use crate::layers::test_util::sample_concepts;
 
     #[test]
     fn bundle_round_trip_preserves_concepts() {

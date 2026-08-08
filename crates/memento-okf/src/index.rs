@@ -16,8 +16,10 @@
 //! (T-043) without breaking callers.
 
 use crate::layers::l1;
+use crate::layers::l2::L2SymbolIndex;
 use crate::project_id::project_id_from_path;
-use memento_domain::DomainError;
+use memento_domain::{DomainError, TenantContext};
+use memento_lancedb::{LanceStore, SymbolInput};
 use okf_core::{Project, SourceFile};
 use okf_parser::Language;
 use std::path::Path;
@@ -49,6 +51,8 @@ pub struct IndexReport {
     pub files_skipped: Vec<SkipEntry>,
     /// Extracted OKF concepts written to the L1 bundle.
     pub concept_count: usize,
+    /// Distinct symbol names in the L2 index (0 when no mirror was written).
+    pub symbol_count: usize,
     /// Wall-clock duration of the whole run.
     pub duration_ms: u64,
 }
@@ -71,14 +75,12 @@ pub fn filter_unsupported(project: &Project) -> (Vec<SourceFile>, Vec<SkipEntry>
     (supported, skipped)
 }
 
-/// Full L1 index: scan → filter → analyze → write bundle (T-040).
-///
-/// `root` is the repository root; `bundles_root` is the tenant's
-/// `okf-bundles/` directory (the project id is derived and appended).
-/// A project with zero supported files is reported honestly (indexed = 0,
-/// skipped listed) without writing a bundle — an error would hide the
-/// reason, and REQ-CK-001's report *is* the mechanism.
-pub async fn index_project(root: &Path, bundles_root: &Path) -> Result<IndexReport, DomainError> {
+/// Shared pipeline body: scan → filter → analyze → write bundle.
+/// Returns the concepts (for derived layers) and the L1 report.
+async fn analyze_and_write(
+    root: &Path,
+    bundles_root: &Path,
+) -> Result<(Vec<okf_parser::Concept>, IndexReport), DomainError> {
     let started = Instant::now();
 
     let root = root
@@ -95,12 +97,13 @@ pub async fn index_project(root: &Path, bundles_root: &Path) -> Result<IndexRepo
         files_indexed: supported.len(),
         files_skipped: skipped,
         concept_count: 0,
+        symbol_count: 0,
         duration_ms: 0,
     };
 
     if supported.is_empty() {
         report.duration_ms = started.elapsed().as_millis() as u64;
-        return Ok(report);
+        return Ok((Vec::new(), report));
     }
 
     let filtered = Project {
@@ -118,6 +121,49 @@ pub async fn index_project(root: &Path, bundles_root: &Path) -> Result<IndexRepo
 
     report.concept_count = result.concepts.len();
     report.duration_ms = started.elapsed().as_millis() as u64;
+    Ok((result.concepts, report))
+}
+
+/// Full L1 index: scan → filter → analyze → write bundle (T-040).
+///
+/// `root` is the repository root; `bundles_root` is the tenant's
+/// `okf-bundles/` directory (the project id is derived and appended).
+/// A project with zero supported files is reported honestly (indexed = 0,
+/// skipped listed) without writing a bundle — an error would hide the
+/// reason, and REQ-CK-001's report *is* the mechanism.
+pub async fn index_project(root: &Path, bundles_root: &Path) -> Result<IndexReport, DomainError> {
+    let (_concepts, report) = analyze_and_write(root, bundles_root).await?;
+    Ok(report)
+}
+
+/// L1 + L2 index: also build the symbol index and mirror it into the
+/// tenant's LanceDB `symbols` table (T-041). Mirror semantics are
+/// replace-per-project, so re-indexing never leaves stale rows.
+pub async fn index_project_with_mirror(
+    ctx: &TenantContext,
+    root: &Path,
+    bundles_root: &Path,
+    store: &LanceStore,
+) -> Result<IndexReport, DomainError> {
+    let (concepts, mut report) = analyze_and_write(root, bundles_root).await?;
+    if concepts.is_empty() {
+        return Ok(report);
+    }
+
+    let l2 = L2SymbolIndex::from_concepts(&concepts);
+    let rows: Vec<SymbolInput> = l2
+        .entries()
+        .map(|(name, r)| SymbolInput {
+            symbol_name: name.to_string(),
+            project_id: report.project_id.clone(),
+            kind: r.kind.clone(),
+            location: format!("{}#L{}-L{}", r.file, r.start_line, r.end_line),
+            signature: r.signature.clone(),
+        })
+        .collect();
+    memento_lancedb::replace_symbols(store, ctx, &report.project_id, &rows).await?;
+
+    report.symbol_count = l2.len();
     Ok(report)
 }
 
@@ -301,5 +347,47 @@ mod tests {
                 .all(|f| matches!(f.language, Language::Rust | Language::Python))
         );
         assert_eq!(skipped.len(), 2);
+    }
+
+    /// T-041: the LanceDB symbols mirror is written and scoped to the
+    /// tenant + project.
+    #[tokio::test]
+    async fn mirror_writes_symbols_per_project() {
+        use memento_lancedb::{LanceStore, lookup_symbols};
+        use memento_testkit::TempStore;
+
+        let ts = TempStore::new();
+        let store = LanceStore::open(&ts.ctx(), ts.root()).await.unwrap();
+        store.ensure_schema().await.unwrap();
+        let ctx = ts.ctx();
+
+        let repo = tempfile::tempdir().unwrap();
+        let bundles = tempfile::tempdir().unwrap();
+        write_mixed_fixture(repo.path());
+
+        let report = index_project_with_mirror(&ctx, repo.path(), bundles.path(), &store)
+            .await
+            .unwrap();
+        assert!(report.symbol_count > 0, "symbols indexed");
+
+        let mirrored = lookup_symbols(&store, &ctx, &report.project_id, None)
+            .await
+            .unwrap();
+        // One mirror row per definition (duplicate names → multiple rows);
+        // symbol_count counts distinct names.
+        assert_eq!(mirrored.len(), report.concept_count);
+        assert!(report.symbol_count <= mirrored.len());
+        let names: Vec<&str> = mirrored.iter().map(|r| r.symbol_name.as_str()).collect();
+        assert!(names.contains(&"add"), "symbol add mirrored: {names:?}");
+        assert!(
+            names.contains(&"Greeter"),
+            "class Greeter mirrored: {names:?}"
+        );
+
+        // Unknown symbol → clean empty result (REQ-CK-004 shape at the mirror).
+        let none = lookup_symbols(&store, &ctx, &report.project_id, Some("nope"))
+            .await
+            .unwrap();
+        assert!(none.is_empty());
     }
 }

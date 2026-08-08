@@ -11,8 +11,10 @@ okf-parser.workspace = true
 okf-analyzer.workspace = true
 okf-generator.workspace = true
 memento-domain = { path = "../memento-domain" }
+memento-lancedb = { path = "../memento-lancedb" }
 sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio.workspace = true
+memento-testkit = { path = "../memento-testkit" }

@@ -11,5 +11,7 @@ pub mod index;
 pub mod layers;
 pub mod project_id;
 
-pub use index::{IndexReport, SUPPORTED_LANGUAGES, SkipEntry, index_project};
+pub use index::{
+    IndexReport, SUPPORTED_LANGUAGES, SkipEntry, index_project, index_project_with_mirror,
+};
 pub use project_id::{is_valid_project_id, project_id_from_path};
