@@ -8,7 +8,7 @@
 //!    `db/tenants/<tid>/auth/credentials.toml` (0600), and the plaintext is
 //!    printed exactly once (REQ-TA-006: hash-only at rest).
 //! 2. **Startup binding** — the process starts with `MEMENTO_TOKEN` +
-//!    `MEMENTO_AGENT_ID`; the resolver (T-051) parses the token, verifies the
+//!    `MEMENTO_AGENT_ID`; [`TenantResolverImpl`] parses the token, verifies the
 //!    hash, and binds the opaque `TenantContext` for the process lifetime
 //!    (REQ-TA-002/003/005). Every auth failure is uniform — unknown tenant and
 //!    wrong key are indistinguishable (REQ-TA-006).
@@ -16,8 +16,10 @@
 //!    the old token dies immediately, a restart is required (risk R9).
 
 mod credentials;
+mod resolver;
 
 pub use credentials::{ApiKey, CredentialStore, SECRET_LEN, TOKEN_PREFIX, hash_key};
+pub use resolver::{BearerToken, TenantResolverImpl, default_workspace_id};
 
 use memento_domain::DomainError;
 use std::path::PathBuf;

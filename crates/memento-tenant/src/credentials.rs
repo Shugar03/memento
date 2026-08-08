@@ -37,7 +37,8 @@ pub const TOKEN_PREFIX: &str = "memo_";
 /// Secret length in base62 characters (D3).
 pub const SECRET_LEN: usize = 48;
 /// Base62 alphabet (D3): 0-9, A-Z, a-z — URL-safe, no look-alike pairs.
-const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+pub(crate) const BASE62: &[u8; 62] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /// A bearer API key (`memo_<tid>_<48×base62>`, design D3). Shown to the
 /// operator exactly once; only its Argon2id hash exists at rest.
