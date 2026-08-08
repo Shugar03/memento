@@ -90,6 +90,11 @@ chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
 dirs = "6.0"
 # --- worker scheduling ---
+# Pinned in batch 1 for the worker. The MVP worker (T-090) uses a plain
+# tokio timer loop instead: its contract is a 24h timer + --now trigger +
+# INJECTABLE clock, which cron-expression schedulers cannot provide. The pin
+# stays in the workspace for future cron needs (see crates/memento-worker/src/
+# scheduler.rs for the full rationale).
 tokio-cron-scheduler = "0.15"
 # --- middleware (pinned for later use; unreferenced in batch 1) ---
 tower = "0.5"
