@@ -8,6 +8,7 @@
 //! never leaks tenant existence (REQ-TA-006).
 
 use crate::credentials::{BASE62, CredentialStore, SECRET_LEN};
+use crate::rotate;
 use async_trait::async_trait;
 use memento_domain::{AgentId, DomainError, TenantContext, TenantId, WorkspaceId};
 use memento_ports::TenantResolver;
@@ -136,9 +137,9 @@ impl TenantResolver for TenantResolverImpl {
     }
 
     /// Rotate the tenant token; the old token dies immediately, a process
-    /// restart is required (risk R9; orchestration docs land in T-052).
+    /// restart is required (risk R9; see [`crate::rotate`]).
     async fn rotate_token(&self, tenant_id: &TenantId) -> Result<String, DomainError> {
-        self.store.rotate(tenant_id).map(crate::ApiKey::into_string)
+        rotate::rotate_token(&self.store, tenant_id).map(crate::ApiKey::into_string)
     }
 }
 
