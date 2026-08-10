@@ -30,3 +30,11 @@ Multitenant memory engine for AI agents. One binary, one root
 ## Spanish documentation
 
 → [README.es.md](README.es.md)
+
+## Ops runbook
+
+→ [docs/ops.en.md](docs/ops.en.md) — backup/restore, retention, audit
+log, GDPR erasure, E2E drill.
+
+→ [docs/config-reference.en.md](docs/config-reference.en.md) — every
+per-tenant knob, env var, CLI flag and operating constant.

@@ -27,6 +27,14 @@ Motor de memoria multitenent para agentes de IA. Un binario, una raíz
 
 → [docs/cli-reference.es.md](docs/cli-reference.es.md)
 
+## Runbook de operaciones
+
+→ [docs/ops.es.md](docs/ops.es.md) — backup/restore, retención, auditoría,
+borrado GDPR, drill E2E.
+
+→ [docs/config-reference.es.md](docs/config-reference.es.md) — todos los
+knobs por tenant, env vars, flags CLI y constantes.
+
 ## Documentación en inglés
 
 → [README.en.md](README.en.md)
