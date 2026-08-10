@@ -1,0 +1,27 @@
+# Host build constraints (w64devkit/windows-gnu; see docs/dependencies.md).
+#
+# Two layered guards against the Windows PE image-size limit (2 GiB) and the
+# default dev-profile cost on this stack (ort + lancedb + tokio link into
+# every test binary, producing ~2 GB test exe + 130 GB target/ on cold rebuild).
+#
+# 1. `[profile.dev.package."*"] debug = "line-tables-only"`: keeps `file:line`
+#    in panic backtraces while removing most DWARF — shrinks dev/test binaries
+#    ~2-3x. Necessary because fully-debugged test binaries exceed the 2 GiB
+#    PE limit and the loader refuses them with `os error 193`
+#    ("%1 is not a valid Win32 application"). Discovery 2617.
+#
+# 2. `[profile.dev] debug = 0`: removes ALL debug info from the root crate's
+#    own code on this host. No `file:line` in panics from our code, but
+#    binaries shrink further (~50-100 MB each instead of ~2 GB). Trade-off:
+#    panic backtraces from memento-rs code are bare function names only.
+#    Acceptable on the host because the CI runner (ubuntu) keeps full debug.
+#    See `docs/dependencies.md` for the rationale.
+#
+# The `release` profile is untouched. CI (ubuntu) is unaffected in correctness
+# — it builds slightly slimmer dev binaries too.
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
+[profile.dev]
+debug = 0
+incremental = false

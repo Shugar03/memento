@@ -1,0 +1,33 @@
+[package]
+name = "memento-okf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS code-knowledge adapter over okf-rs (L1-L4 layers)."
+
+[dependencies]
+okf-core.workspace = true
+okf-parser.workspace = true
+okf-analyzer.workspace = true
+okf-generator.workspace = true
+memento-domain = { path = "../memento-domain" }
+memento-lancedb = { path = "../memento-lancedb" }
+memento-ports = { path = "../memento-ports" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
+memento-testkit = { path = "../memento-testkit" }
+# T-103: code-index benchmark gates (REQ-CK-002) live in benches/.
+criterion.workspace = true
+
+# Criterion supplies its own harness (criterion_main!); the default libtest
+# harness would wrap the bench file and never call the generated main.
+[[bench]]
+name = "code_index_bench"
+harness = false

@@ -1,0 +1,155 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/memento-domain",
+    "crates/memento-ports",
+    "crates/memento-i18n",
+    "crates/memento-lancedb",
+    "crates/memento-embed-fastembed",
+    "crates/memento-parse",
+    "crates/memento-okf",
+    "crates/memento-tenant",
+    "crates/memento-application",
+    "crates/memento-mcp",
+    "crates/memento-cli",
+    "crates/memento-worker",
+    "crates/memento-testkit",
+]
+
+# Root package: workspace-level integration harness (T-102 MCP↔CLI
+# equivalence in tests/) and criterion benches (T-103 in benches/). It is
+# test infrastructure only — no product code, never published.
+[package]
+name = "memento-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace-level integration harness and criterion benchmarks for Memento RS."
+publish = false
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+rmcp.workspace = true
+# T-103 criterion benches (benches/*): search/ingest/embed latency suites.
+criterion.workspace = true
+memento-domain = { path = "crates/memento-domain" }
+memento-ports = { path = "crates/memento-ports" }
+memento-i18n = { path = "crates/memento-i18n" }
+memento-lancedb = { path = "crates/memento-lancedb" }
+memento-parse = { path = "crates/memento-parse" }
+memento-tenant = { path = "crates/memento-tenant" }
+memento-application = { path = "crates/memento-application" }
+memento-mcp = { path = "crates/memento-mcp" }
+memento-cli = { path = "crates/memento-cli" }
+memento-testkit = { path = "crates/memento-testkit" }
+memento-embed-fastembed = { path = "crates/memento-embed-fastembed" }
+
+# Criterion supplies its own harness (criterion_main!); the default libtest
+# harness would wrap the bench files and never call the generated main.
+[[bench]]
+name = "search_bench"
+harness = false
+
+[[bench]]
+name = "ingest_bench"
+harness = false
+
+[[bench]]
+name = "embed_bench"
+harness = false
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# --- async runtime ---
+tokio = { version = "1.53", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+# --- serialization ---
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = { version = "1.2", features = ["derive"] }
+# Binary blobs cross the MCP JSON boundary as base64 (memory.ingest_document).
+base64 = "0.22"
+# --- errors ---
+anyhow = "1.0"
+thiserror = "2.0"
+# --- observability ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+# --- CLI / MCP ---
+clap = { version = "4.6", features = ["derive"] }
+# `client` feature: in-process MCP client for memento-mcp's boundary tests
+# (T-070/T-071) and the MCP↔CLI equivalence harness (T-102).
+rmcp = { version = "3.1", features = ["server", "transport-io", "client"] }
+# --- storage / embeddings / parse ---
+lancedb = "0.33"
+# datafusion-common: ScalarValue literals for typed store predicates (version
+# aligned with lancedb 0.33's own datafusion-common 54.x in Cargo.lock).
+datafusion-common = "54.1"
+# fastembed: text models only for the MVP (CLIP/image models deferred to phase 2 per design).
+# default-features = false: fastembed's defaults pull `image-models` (image -> zune-jpeg 0.5.15,
+# which fails to compile on rustc 1.97 — upstream bug, fixed only on the `dev` branch) and
+# `ort-download-binaries-native-tls` (no prebuilt onnxruntime for windows-gnu; native-tls would
+# need OpenSSL there). We use `ort-load-dynamic` (onnxruntime loaded at runtime — see
+# docs/dependencies.md) and `hf-hub-rustls-tls` (pure-Rust TLS). See docs/dependencies.md.
+fastembed = { version = "5.17", default-features = false, features = ["ort-load-dynamic", "hf-hub-rustls-tls"] }
+# text-splitter: the `tokenizers` feature dropped — its upstream feature drags
+# tokenizers 0.23 + onig into the tree while fastembed 5.x pins ^0.22, and the
+# upstream ChunkSizer impl targets its own 0.23 copy. memento-parse implements
+# ChunkSizer for a local wrapper over the workspace tokenizers 0.22 pin instead
+# (single tokenizers copy; see docs/dependencies.md deviations).
+text-splitter = "0.32"
+# fastembed 5.x pins tokenizers to ^0.22.x; aligning the workspace pin avoids a duplicate build.
+tokenizers = "0.22"
+# --- code knowledge (git pin; repo jyjeanne/okf-rs, packages okf-core/parser/analyzer/generator; see docs/dependencies.md) ---
+okf-core = { git = "https://github.com/jyjeanne/okf-rs", rev = "42842becafac841a97555b203c2c72f39410f0fb" }
+okf-parser = { git = "https://github.com/jyjeanne/okf-rs", rev = "42842becafac841a97555b203c2c72f39410f0fb" }
+okf-analyzer = { git = "https://github.com/jyjeanne/okf-rs", rev = "42842becafac841a97555b203c2c72f39410f0fb" }
+okf-generator = { git = "https://github.com/jyjeanne/okf-rs", rev = "42842becafac841a97555b203c2c72f39410f0fb" }
+# --- tenancy / auth / crypto ---
+argon2 = "0.5"
+rand = "0.10"
+sha2 = "0.11"
+# AES-256-GCM for per-backup encryption (design D4: per-backup key wrapped by
+# the tenant master key; crypto-shredding on erase).
+aes-gcm = "0.10"
+# Backup payload + export archives (plain tar for backups, tar.gz for export).
+tar = "0.4"
+flate2 = "1.1"
+# rand_core 0.6 with getrandom: OsRng for Argon2id salt + base62 secret
+# generation (password-hash 0.5's rand_core re-export leaves the getrandom
+# feature off; enabling it on the same 0.6.x copy unifies features).
+rand_core = { version = "0.6", features = ["getrandom"] }
+# --- ids / time / fs ---
+uuid = { version = "1.24", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+time = "0.3"
+dirs = "6.0"
+# --- worker scheduling ---
+# Pinned in batch 1 for the worker. The MVP worker (T-090) uses a plain
+# tokio timer loop instead: its contract is a 24h timer + --now trigger +
+# INJECTABLE clock, which cron-expression schedulers cannot provide. The pin
+# stays in the workspace for future cron needs (see crates/memento-worker/src/
+# scheduler.rs for the full rationale).
+tokio-cron-scheduler = "0.15"
+# --- middleware (pinned for later use; unreferenced in batch 1) ---
+tower = "0.5"
+
+# --- dev ---
+tempfile = "3.27"
+criterion = "0.8"
+proptest = "1.11"
+assert_cmd = "2.2"
+predicates = "3.1"
+expect-test = "1.5"

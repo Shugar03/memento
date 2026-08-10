@@ -1,0 +1,28 @@
+[package]
+name = "memento-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS application use cases: ingest, search, context_fit, feedback, delete, sweep, erase, backup, export, code."
+
+[dependencies]
+memento-domain = { path = "../memento-domain" }
+memento-ports = { path = "../memento-ports" }
+memento-lancedb = { path = "../memento-lancedb" }
+memento-parse = { path = "../memento-parse" }
+memento-okf = { path = "../memento-okf" }
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+aes-gcm.workspace = true
+tar.workspace = true
+flate2.workspace = true
+rand_core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+memento-testkit = { path = "../memento-testkit" }

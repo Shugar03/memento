@@ -1,0 +1,27 @@
+[package]
+name = "memento-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS core domain: tenant, workspace, chunk, provenance and error taxonomy."
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+# tokio: task-local tenant context (TenantContext::current / with)
+tokio.workspace = true
+
+[features]
+# Test-only TenantContext constructor (TenantContext::new_for_tests), consumed by
+# memento-testkit and adapter test suites. Production builds never enable this
+# feature, so the "contexts are constructible only via the tenant resolver"
+# invariant (REQ-TA-002/005) holds for every shipped artifact.
+testkit = []
+# Production TenantContext constructor (TenantContext::new). memento-tenant is
+# the ONLY crate that enables this feature (the resolver is the sole producer of
+# a bound context, REQ-TA-002/005); every other crate compiles memento-domain
+# without it, keeping the constructor crate-private.
+tenant-resolver = []

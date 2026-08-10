@@ -1,0 +1,732 @@
+//! Ingest use cases (T-060, REQ-MC-001/002/005/007).
+//!
+//! [`AppService::ingest_text`] and [`AppService::ingest_document`] run the
+//! full pipeline exactly as the design prescribes:
+//!
+//! ```text
+//! validate (10MB blob / 10k chunks) → chore id → dedup probe (REQ-MC-005)
+//!   → parse (document only; single normalization boundary) → chunk
+//!   → embed (batch 64; --no-embeddings → None) → single batch add (atomic)
+//!   → docs row (idempotency key) → audit
+//! ```
+//!
+//! # Idempotency (REQ-MC-005)
+//!
+//! The dedup probe hashes the RAW INPUT (`sha256(tenant ‖ NUL ‖ content)`),
+//! tenant-scoped by construction AND by query scope. A duplicate ingest
+//! returns the existing chunk ids + the stored doc id — zero new chunks.
+//! Scope is tenant-wide (locked decision): re-ingesting identical content in
+//! a different workspace of the SAME tenant still dedups.
+//!
+//! # Atomicity (REQ-MC-007)
+//!
+//! Writes happen only after every fallible stage (parse/chunk/embed) has
+//! succeeded, and the chunks land in ONE `table.add()` call — visible all or
+//! not at all. The docs row is written AFTER the chunk commit; if it fails
+//! the ingest still succeeded and only the dedup probe for that doc degrades
+//! (traced loudly).
+
+use crate::{AppService, EMBEDDING_MODEL_VERSION, MAX_BLOB_BYTES, MAX_CHUNKS_PER_DOC};
+use memento_domain::{
+    ChoreId, ChunkId, DocId, DomainError, MemoryChunk, Provenance, SourceKind, TenantContext,
+};
+use memento_lancedb::{
+    DocRecord, add_chunks_batch, chunk_ids_by_doc, find_doc_by_hash, upsert_doc,
+};
+use memento_parse::chunk::MAX_TOKENS;
+use memento_ports::{IngestDocumentRequest, IngestResult, IngestTextRequest};
+use serde_json::json;
+
+/// Pre-chunk quota guard (REQ-MC-007, design MC Q4).
+///
+/// text-splitter 0.32's token sizer probes prefix ranges per chunk, which is
+/// super-linear on very large inputs: without this guard an over-quota ingest
+/// (e.g. a 3M-token text) would spend minutes chunking before the count check
+/// in `stage_chunks` could reject it. Counting tokens is ONE O(n) encode, and
+/// every chunk is at most [`MAX_TOKENS`] tokens, so
+/// `tokens > MAX_CHUNKS_PER_DOC * MAX_TOKENS` proves the ingest would exceed
+/// the 10k-chunk limit — exact, not a heuristic (overlap only makes the real
+/// chunk count higher, so the bound stays conservative in the right direction).
+fn over_chunk_quota(app: &AppService, text: &str) -> bool {
+    app.chunker.token_count(text) > MAX_CHUNKS_PER_DOC * MAX_TOKENS
+}
+
+impl AppService {
+    /// Ingest raw text (REQ-MC-001): chunk → embed → store, returning the
+    /// produced chunk ids plus the chore id that makes the operation
+    /// observable (REQ-MC-007).
+    ///
+    /// # Errors
+    ///
+    /// * `InvalidInput` — empty or whitespace-only text (nothing stored).
+    /// * `QuotaExceeded` — the ingest produces more than
+    ///   [`MAX_CHUNKS_PER_DOC`] chunks (nothing stored).
+    /// * `EmbeddingFailed` / adapter errors — propagated stage-named
+    ///   (REQ-MC-007, zero visible chunks).
+    pub async fn ingest_text(
+        &self,
+        ctx: &TenantContext,
+        req: IngestTextRequest,
+    ) -> Result<IngestResult, DomainError> {
+        if req.text.trim().is_empty() {
+            return Err(DomainError::InvalidInput {
+                message: "ingest_text requires non-empty text".into(),
+            });
+        }
+        let chore_id = ChoreId::new();
+        let hash = self.content_hash(req.text.as_bytes());
+
+        // Dedup probe (REQ-MC-005): identical content in this tenant already
+        // ingested → reference the existing records, write nothing.
+        if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
+            let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
+            self.record_audit(
+                ctx,
+                "ingest",
+                json!({
+                    "doc_id": doc.doc_id,
+                    "chunks": ids.len(),
+                    "duplicate": true,
+                    "source": "text",
+                }),
+                Some(chore_id),
+            );
+            return Ok(IngestResult {
+                chunk_ids: ids,
+                doc_id: doc.doc_id,
+                chore_id: Some(chore_id),
+            });
+        }
+
+        let doc_id = req.doc_id.unwrap_or_default();
+        let title = title_of(req.metadata.as_ref());
+        let created_at = self.clock.now();
+
+        // Quota pre-check BEFORE the splitter (see `over_chunk_quota`).
+        if over_chunk_quota(self, &req.text) {
+            return Err(DomainError::QuotaExceeded {
+                message: format!(
+                    "ingest would produce more than {MAX_CHUNKS_PER_DOC} chunks \
+                     ({MAX_CHUNKS_PER_DOC} x {MAX_TOKENS} token limit)"
+                ),
+            });
+        }
+        let chunks = self.chunker.chunk(&req.text);
+
+        self.stage_chunks(
+            ctx,
+            &chunks.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            StageSpec {
+                doc_id,
+                source: SourceKind::Text,
+                title,
+                content_hash: hash,
+                created_at,
+                chore_id,
+            },
+        )
+        .await
+    }
+
+    /// Ingest a document blob (REQ-MC-002): normalize to Markdown through
+    /// the single normalization boundary, then run the same pipeline as
+    /// text ingest.
+    ///
+    /// # Errors
+    ///
+    /// * `InvalidInput` — empty blob, or the normalized Markdown is empty.
+    /// * `QuotaExceeded` — blob over [`MAX_BLOB_BYTES`] or more than
+    ///   [`MAX_CHUNKS_PER_DOC`] chunks.
+    /// * `Parse` / subprocess codes — normalization failed (zero writes).
+    pub async fn ingest_document(
+        &self,
+        ctx: &TenantContext,
+        req: IngestDocumentRequest,
+    ) -> Result<IngestResult, DomainError> {
+        if req.blob.is_empty() {
+            return Err(DomainError::InvalidInput {
+                message: "ingest_document requires a non-empty blob".into(),
+            });
+        }
+        if req.blob.len() as u64 > MAX_BLOB_BYTES {
+            return Err(DomainError::QuotaExceeded {
+                message: format!(
+                    "document blob is {} bytes, limit is {MAX_BLOB_BYTES}",
+                    req.blob.len()
+                ),
+            });
+        }
+        let chore_id = ChoreId::new();
+        let hash = self.content_hash(&req.blob);
+
+        // Dedup probe on the raw blob (REQ-MC-005).
+        if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
+            let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
+            self.record_audit(
+                ctx,
+                "ingest",
+                json!({
+                    "doc_id": doc.doc_id,
+                    "chunks": ids.len(),
+                    "duplicate": true,
+                    "source": source_label(&doc.source),
+                }),
+                Some(chore_id),
+            );
+            return Ok(IngestResult {
+                chunk_ids: ids,
+                doc_id: doc.doc_id,
+                chore_id: Some(chore_id),
+            });
+        }
+
+        // Single normalization boundary (REQ-MC-002); failures are
+        // stage-named by the adapter (REQ-MC-007) and write nothing.
+        let parsed = self.parse.parse(&req.blob, req.source_hint.clone()).await?;
+        if parsed.markdown.trim().is_empty() {
+            return Err(DomainError::InvalidInput {
+                message: "document normalized to empty content".into(),
+            });
+        }
+
+        let doc_id = req.doc_id.unwrap_or_default();
+        let title = title_of(req.metadata.as_ref());
+        let created_at = self.clock.now();
+
+        // Quota pre-check BEFORE the splitter (see `over_chunk_quota`).
+        if over_chunk_quota(self, &parsed.markdown) {
+            return Err(DomainError::QuotaExceeded {
+                message: format!(
+                    "document would produce more than {MAX_CHUNKS_PER_DOC} chunks \
+                     ({MAX_CHUNKS_PER_DOC} x {MAX_TOKENS} token limit)"
+                ),
+            });
+        }
+        let chunks = self.chunker.chunk(&parsed.markdown);
+
+        self.stage_chunks(
+            ctx,
+            &chunks.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            StageSpec {
+                doc_id,
+                source: parsed.source_kind,
+                title,
+                content_hash: hash,
+                created_at,
+                chore_id,
+            },
+        )
+        .await
+    }
+
+    /// The shared pipeline tail: chunk-count check → embed (batch 64) →
+    /// single atomic batch add → docs row → audit (REQ-MC-007).
+    ///
+    /// The spec bundles everything the staged write needs besides the
+    /// chunked texts themselves (keeps the signature at 4 args).
+    async fn stage_chunks(
+        &self,
+        ctx: &TenantContext,
+        texts: &[String],
+        spec: StageSpec,
+    ) -> Result<IngestResult, DomainError> {
+        let StageSpec {
+            doc_id,
+            source,
+            title,
+            content_hash,
+            created_at,
+            chore_id,
+        } = spec;
+        if texts.len() > MAX_CHUNKS_PER_DOC {
+            return Err(DomainError::QuotaExceeded {
+                message: format!(
+                    "ingest produced {} chunks, limit is {MAX_CHUNKS_PER_DOC}",
+                    texts.len()
+                ),
+            });
+        }
+
+        let vectors = self.embed_batch(texts).await?;
+
+        let chunks: Vec<MemoryChunk> = texts
+            .iter()
+            .zip(vectors)
+            .map(|(text, vector)| {
+                let id = ChunkId::new();
+                MemoryChunk {
+                    id,
+                    tenant_id: *ctx.tenant_id(),
+                    workspace_id: *ctx.workspace_id(),
+                    agent_id: ctx.agent_id().clone(),
+                    doc_id,
+                    text: text.clone(),
+                    vector,
+                    created_at,
+                    // REQ-MC-006: complete provenance at write, matching the
+                    // execution context.
+                    provenance: Provenance {
+                        source: source.clone(),
+                        doc_id,
+                        chunk_id: id,
+                        created_at,
+                        embedding_model_version: EMBEDDING_MODEL_VERSION.to_string(),
+                        tenant_id: *ctx.tenant_id(),
+                        workspace_id: *ctx.workspace_id(),
+                        agent_id: ctx.agent_id().clone(),
+                    },
+                }
+            })
+            .collect();
+
+        // ONE add call → atomic visibility (REQ-MC-007).
+        add_chunks_batch(&self.store, ctx, &chunks).await?;
+
+        // Idempotency key row — after the commit; a failure here degrades
+        // the dedup probe for this doc only (see module docs).
+        let doc = DocRecord {
+            doc_id,
+            tenant_id: *ctx.tenant_id(),
+            workspace_id: *ctx.workspace_id(),
+            agent_id: ctx.agent_id().clone(),
+            title,
+            source: source.clone(),
+            created_at,
+            content_hash: content_hash.to_string(),
+        };
+        if let Err(err) = upsert_doc(&self.store, ctx, &doc).await {
+            tracing::error!(%err, doc = %doc_id,
+                "docs row upsert failed; idempotency probe degraded for this doc");
+        }
+
+        self.record_audit(
+            ctx,
+            "ingest",
+            json!({
+                "doc_id": doc_id,
+                "chunks": chunks.len(),
+                "duplicate": false,
+                "source": source_label(&source),
+            }),
+            Some(chore_id),
+        );
+        Ok(IngestResult {
+            chunk_ids: chunks.iter().map(|c| c.id).collect(),
+            doc_id,
+            chore_id: Some(chore_id),
+        })
+    }
+}
+
+/// Everything `stage_chunks` needs besides the chunked texts.
+struct StageSpec {
+    doc_id: DocId,
+    source: SourceKind,
+    title: Option<String>,
+    content_hash: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    chore_id: ChoreId,
+}
+
+/// Metadata → docs title: only `metadata["title"]` is honored (the rest of
+/// the metadata map is not persisted in the MVP).
+fn title_of(metadata: Option<&memento_ports::Metadata>) -> Option<String> {
+    metadata
+        .and_then(|m| m.0.get("title"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Stable label for audit targets (`text`, `markdown`, `document:docx`).
+fn source_label(source: &SourceKind) -> String {
+    match source {
+        SourceKind::Text => "text".to_string(),
+        SourceKind::Markdown => "markdown".to_string(),
+        SourceKind::Document(ext) => format!("document:{ext}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{
+        test_app, test_app_failing_embed, test_app_failing_parse, test_app_no_embed,
+    };
+    use memento_domain::SourceKind;
+    use memento_ports::{Metadata, SearchPort, SearchQuery};
+    use memento_testkit::{TempStore, TestClock, spanish_corpus};
+    use serde_json::json;
+
+    fn text_request(text: &str) -> IngestTextRequest {
+        IngestTextRequest {
+            text: text.to_string(),
+            doc_id: None,
+            metadata: None,
+        }
+    }
+
+    async fn ingest_one(ts: &TempStore, text: &str) -> IngestResult {
+        let clock = TestClock::default();
+        let app = test_app(ts, clock).await;
+        app.ingest_text(&ts.ctx(), text_request(text))
+            .await
+            .expect("ingest ok")
+    }
+
+    #[tokio::test]
+    async fn short_text_ingests_one_chunk_with_chore_and_provenance() {
+        // REQ-MC-001 scenario 1: ~200-token Spanish text → one chunk id,
+        // a chore id, and the chunk is searchable (REQ-MR-001).
+        let ts = TempStore::new();
+        let result = ingest_one(&ts, &spanish_corpus().join(" ")).await;
+        assert_eq!(result.chunk_ids.len(), 1, "short text → single chunk");
+        assert!(
+            result.chore_id.is_some(),
+            "chore id observable (REQ-MC-007)"
+        );
+
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let chunk = app
+            .store()
+            .get_chunk(&ts.ctx(), &result.chunk_ids[0])
+            .await
+            .expect("read back")
+            .expect("chunk exists");
+        assert_eq!(chunk.doc_id, result.doc_id);
+        // REQ-MC-006: complete provenance matching the execution context.
+        assert_eq!(chunk.provenance.tenant_id, *ts.tenant_id());
+        assert_eq!(chunk.provenance.workspace_id, *ts.workspace_id());
+        assert_eq!(chunk.provenance.agent_id, *ts.agent_id());
+        assert_eq!(chunk.provenance.source, SourceKind::Text);
+        assert_eq!(chunk.provenance.chunk_id, chunk.id);
+        assert!(!chunk.provenance.embedding_model_version.is_empty());
+        // REQ-MC-004: vector populated from day 1 (stub embedder).
+        assert_eq!(chunk.vector.as_ref().expect("vector present").len(), 384);
+
+        // Searchable immediately (atomic visibility, REQ-MC-007).
+        let hits = app
+            .store()
+            .search(
+                &ts.ctx(),
+                SearchQuery::new("memoria", 5, *ts.workspace_id()),
+            )
+            .await
+            .expect("search ok");
+        assert!(!hits.is_empty(), "chunk searchable after ingest");
+    }
+
+    #[tokio::test]
+    async fn empty_and_whitespace_text_rejected_with_nothing_stored() {
+        // REQ-MC-001 scenario 2: structured validation error, zero writes.
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let ctx = ts.ctx();
+
+        for bad in ["", "   ", "\n\t  "] {
+            let err = app
+                .ingest_text(&ctx, text_request(bad))
+                .await
+                .expect_err("rejected");
+            assert_eq!(err.code(), "INVALID_INPUT", "for {bad:?}");
+        }
+        assert_eq!(app.store().count_chunks(&ctx).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_ingest_returns_existing_ids() {
+        // REQ-MC-005 scenario 1: re-ingesting identical text creates no new
+        // chunks and the response references the existing records.
+        let ts = TempStore::new();
+        let text = spanish_corpus().join(" ");
+        let first = ingest_one(&ts, &text).await;
+        let second = ingest_one(&ts, &text).await;
+
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        assert_eq!(app.store().count_chunks(&ts.ctx()).await.unwrap(), 1);
+        assert_eq!(first.chunk_ids, second.chunk_ids, "same ids returned");
+        assert_eq!(first.doc_id, second.doc_id, "same doc referenced");
+        assert!(first.chore_id.is_some() && second.chore_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn duplicate_with_explicit_doc_id_still_dedups() {
+        // The probe is content-based: a different doc_id on the same content
+        // must NOT create a new copy.
+        let ts = TempStore::new();
+        let text = spanish_corpus().join(" ");
+        let first = ingest_one(&ts, &text).await;
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let second = app
+            .ingest_text(
+                &ts.ctx(),
+                IngestTextRequest {
+                    text,
+                    doc_id: Some(DocId::new()),
+                    metadata: None,
+                },
+            )
+            .await
+            .expect("ingest ok");
+        assert_eq!(first.chunk_ids, second.chunk_ids);
+        assert_eq!(app.store().count_chunks(&ts.ctx()).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn same_content_different_tenant_is_independent() {
+        // REQ-MC-005 scenario 2: identical content in T2 creates an
+        // independent copy — no cross-tenant dedup.
+        let ts1 = TempStore::new();
+        let ts2 = TempStore::new();
+        let text = spanish_corpus().join(" ");
+        let r1 = ingest_one(&ts1, &text).await;
+        let r2 = ingest_one(&ts2, &text).await;
+
+        let clock = TestClock::default();
+        let app2 = test_app(&ts2, clock).await;
+        assert_eq!(app2.store().count_chunks(&ts2.ctx()).await.unwrap(), 1);
+        assert_ne!(r1.chunk_ids, r2.chunk_ids, "independent copies");
+        // The same content in T2 is fully searchable there.
+        let hits = app2
+            .store()
+            .search(
+                &ts2.ctx(),
+                SearchQuery::new("memoria", 5, *ts2.workspace_id()),
+            )
+            .await
+            .expect("search ok");
+        assert!(!hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn document_ingest_runs_the_real_fallback_boundary() {
+        // REQ-MC-002: a Markdown blob normalizes through the real fallback
+        // parser (no subprocess), chunked, stored, source recorded.
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let markdown = format!("# Notas\n\n{}", spanish_corpus().join(" "));
+
+        let result = app
+            .ingest_document(
+                &ts.ctx(),
+                IngestDocumentRequest {
+                    blob: markdown.as_bytes().to_vec(),
+                    source_hint: SourceKind::Markdown,
+                    doc_id: None,
+                    metadata: Some(Metadata(
+                        json!({"title": "Notas de prueba"})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    )),
+                },
+            )
+            .await
+            .expect("ingest ok");
+
+        let chunk = app
+            .store()
+            .get_chunk(&ts.ctx(), &result.chunk_ids[0])
+            .await
+            .expect("read")
+            .expect("chunk");
+        assert_eq!(chunk.provenance.source, SourceKind::Markdown);
+        assert!(chunk.text.contains("memoria"), "markdown content chunked");
+
+        // The docs row carried the title through metadata.
+        let docs = memento_lancedb::all_docs(app.store(), &ts.ctx())
+            .await
+            .expect("docs");
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title.as_deref(), Some("Notas de prueba"));
+    }
+
+    #[tokio::test]
+    async fn mid_normalization_failure_leaves_zero_visible_chunks() {
+        // REQ-MC-007: a failing parse → structured stage-named error and
+        // zero chunks visible anywhere.
+        let ts = TempStore::new();
+        let app = test_app_failing_parse(&ts).await;
+        let err = app
+            .ingest_document(
+                &ts.ctx(),
+                IngestDocumentRequest {
+                    blob: b"corrupt".to_vec(),
+                    source_hint: SourceKind::Document("docx".into()),
+                    doc_id: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .expect_err("parse fails");
+        assert_eq!(err.code(), "PARSE");
+        assert_eq!(app.store().count_chunks(&ts.ctx()).await.unwrap(), 0);
+        // Nothing searchable either.
+        let hits = app
+            .store()
+            .search(
+                &ts.ctx(),
+                SearchQuery::new("memoria", 5, *ts.workspace_id()),
+            )
+            .await
+            .expect("search ok");
+        assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embed_failure_leaves_zero_visible_chunks() {
+        // REQ-MC-007 variant: the embed stage fails → structured error,
+        // zero writes (chunks are only added after embedding).
+        let ts = TempStore::new();
+        let app = test_app_failing_embed(&ts).await;
+        let err = app
+            .ingest_text(&ts.ctx(), text_request("la memoria es un río."))
+            .await
+            .expect_err("embed fails");
+        assert_eq!(err.code(), "EMBEDDING_FAILED");
+        assert_eq!(app.store().count_chunks(&ts.ctx()).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn no_embeddings_mode_stores_searchable_chunks_without_vectors() {
+        // REQ-MC-004: --no-embeddings → chunks stored, FTS-searchable,
+        // vectors explicitly absent, pipeline does not fail.
+        let ts = TempStore::new();
+        let app = test_app_no_embed(&ts).await;
+        let result = app
+            .ingest_text(&ts.ctx(), text_request(&spanish_corpus().join(" ")))
+            .await
+            .expect("ingest ok without embeddings");
+
+        let chunk = app
+            .store()
+            .get_chunk(&ts.ctx(), &result.chunk_ids[0])
+            .await
+            .expect("read")
+            .expect("chunk");
+        assert!(chunk.vector.is_none(), "explicitly absent vector");
+        let hits = app
+            .store()
+            .search(
+                &ts.ctx(),
+                SearchQuery::new("memoria", 5, *ts.workspace_id()),
+            )
+            .await
+            .expect("FTS works");
+        assert!(!hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_document_blob_is_rejected() {
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let blob = vec![b'x'; (MAX_BLOB_BYTES + 1) as usize];
+        let err = app
+            .ingest_document(
+                &ts.ctx(),
+                IngestDocumentRequest {
+                    blob,
+                    source_hint: SourceKind::Markdown,
+                    doc_id: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .expect_err("too big");
+        assert_eq!(err.code(), "QUOTA_EXCEEDED");
+        assert_eq!(app.store().count_chunks(&ts.ctx()).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn chunk_overflow_is_rejected_before_embedding() {
+        // Design MC Q4: >10k chunks/doc → QUOTA_EXCEEDED with zero writes.
+        // The sentence ≈ 12-13 Spanish tokens; 250k repeats ≈ 3.1M tokens
+        // ≈ 11.5k chunks — safely over the 10k limit. The blob limit does
+        // not apply (it guards documents; text has no byte cap).
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let sentence = "la memoria es un río subterráneo que nunca deja de fluir. ";
+        let text = sentence.repeat(250_000);
+
+        let err = app
+            .ingest_text(&ts.ctx(), text_request(&text))
+            .await
+            .expect_err("too many chunks");
+        assert_eq!(err.code(), "QUOTA_EXCEEDED");
+        assert_eq!(app.store().count_chunks(&ts.ctx()).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn ingest_stamps_injectable_clock_time() {
+        // The retention sweep (T-063) measures age from created_at, so the
+        // ingest timestamp must come from the injectable clock (design D5).
+        let ts = TempStore::new();
+        let start = chrono::Utc::now() - chrono::Duration::days(40);
+        let clock = TestClock::new(start);
+        let app = test_app(&ts, clock).await;
+        let result = app
+            .ingest_text(&ts.ctx(), text_request("recuerdo antiguo que debe expirar"))
+            .await
+            .expect("ingest ok");
+        let chunk = app
+            .store()
+            .get_chunk(&ts.ctx(), &result.chunk_ids[0])
+            .await
+            .expect("read")
+            .expect("chunk");
+        assert_eq!(chunk.created_at, start, "clock stamped into provenance");
+        assert_eq!(chunk.provenance.created_at, start);
+    }
+
+    #[tokio::test]
+    async fn embed_batches_at_64() {
+        // Design step 5: the app batches embeddings at EMBED_BATCH (the
+        // fastembed adapter errors on oversized batches). Ingesting text
+        // that yields >64 chunks exercises several batches.
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let sentence = "la memoria es un río subterráneo que nunca deja de fluir. ";
+        let text = sentence.repeat(3_000);
+        let result = app
+            .ingest_text(&ts.ctx(), text_request(&text))
+            .await
+            .expect("ingest ok");
+        assert!(result.chunk_ids.len() > 64, "fixture spans batches");
+        // Every chunk carries a 384-d vector (stub) — batch boundaries did
+        // not corrupt alignment.
+        for id in result.chunk_ids.iter().take(70) {
+            let chunk = app
+                .store()
+                .get_chunk(&ts.ctx(), id)
+                .await
+                .expect("read")
+                .expect("exists");
+            assert_eq!(chunk.vector.expect("vector").len(), 384);
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_is_observable_in_audit() {
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        app.ingest_text(&ts.ctx(), text_request("auditoría de ingesta"))
+            .await
+            .expect("ok");
+        let raw = std::fs::read_to_string(app.audit_log_path()).expect("audit file");
+        let line = raw.lines().next().expect("one line");
+        let value: serde_json::Value = serde_json::from_str(line).expect("json");
+        assert_eq!(value["action"], "ingest");
+        assert_eq!(value["outcome"], "ok");
+        assert_eq!(value["target"]["duplicate"], false);
+        // Content never enters the audit: the ingested text is absent.
+        assert!(!raw.contains("auditoría"), "no content in audit: {raw}");
+    }
+}
