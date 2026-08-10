@@ -77,11 +77,52 @@ pub enum StringKey {
     CliHelpContextFit,
     CliHelpHealth,
     CliHelpCodeIndex,
+    CliHelpRoot,
+    CliHelpTenant,
+    CliHelpTenantDelete,
+    CliHelpTenantExport,
+    CliHelpTenantRetention,
+    CliHelpTenantBackup,
+    CliHelpTenantRestore,
+    CliHelpTenantSweep,
+    CliHelpIngestDocument,
+    CliHelpIngestBulk,
+    CliHelpGetChunk,
+    CliHelpFeedback,
+    CliHelpStats,
+    CliHelpCodeStatus,
+    CliHelpCodeDebug,
+    CliHelpJson,
+    CliHelpNoEmbeddings,
+    CliHelpRootArg,
+    CliHelpLocaleArg,
+    CliHelpQueryArg,
+    CliHelpTextArg,
+    CliHelpTopKArg,
+    CliHelpWorkspaceArg,
+    CliHelpRrfArg,
+    CliHelpNameArg,
+    CliHelpDaysArg,
+    CliHelpChunkArg,
+    CliHelpDocArg,
+    CliHelpUsefulArg,
+    CliHelpNotUsefulArg,
+    CliHelpReasonArg,
+    CliHelpBudgetArg,
+    CliHelpFileArg,
+    CliHelpDirArg,
+    CliHelpSourceArg,
+    CliHelpProjectArg,
+    CliHelpBackupDirArg,
+    CliHelpPathArg,
+    CliMsgTokenCreated,
+    CliMsgTokenRotated,
+    CliPromptConfirmDelete,
 }
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 45] = [
+    pub const ALL: [StringKey; 86] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -127,6 +168,47 @@ impl StringKey {
         StringKey::CliHelpContextFit,
         StringKey::CliHelpHealth,
         StringKey::CliHelpCodeIndex,
+        StringKey::CliHelpRoot,
+        StringKey::CliHelpTenant,
+        StringKey::CliHelpTenantDelete,
+        StringKey::CliHelpTenantExport,
+        StringKey::CliHelpTenantRetention,
+        StringKey::CliHelpTenantBackup,
+        StringKey::CliHelpTenantRestore,
+        StringKey::CliHelpTenantSweep,
+        StringKey::CliHelpIngestDocument,
+        StringKey::CliHelpIngestBulk,
+        StringKey::CliHelpGetChunk,
+        StringKey::CliHelpFeedback,
+        StringKey::CliHelpStats,
+        StringKey::CliHelpCodeStatus,
+        StringKey::CliHelpCodeDebug,
+        StringKey::CliHelpJson,
+        StringKey::CliHelpNoEmbeddings,
+        StringKey::CliHelpRootArg,
+        StringKey::CliHelpLocaleArg,
+        StringKey::CliHelpQueryArg,
+        StringKey::CliHelpTextArg,
+        StringKey::CliHelpTopKArg,
+        StringKey::CliHelpWorkspaceArg,
+        StringKey::CliHelpRrfArg,
+        StringKey::CliHelpNameArg,
+        StringKey::CliHelpDaysArg,
+        StringKey::CliHelpChunkArg,
+        StringKey::CliHelpDocArg,
+        StringKey::CliHelpUsefulArg,
+        StringKey::CliHelpNotUsefulArg,
+        StringKey::CliHelpReasonArg,
+        StringKey::CliHelpBudgetArg,
+        StringKey::CliHelpFileArg,
+        StringKey::CliHelpDirArg,
+        StringKey::CliHelpSourceArg,
+        StringKey::CliHelpProjectArg,
+        StringKey::CliHelpBackupDirArg,
+        StringKey::CliHelpPathArg,
+        StringKey::CliMsgTokenCreated,
+        StringKey::CliMsgTokenRotated,
+        StringKey::CliPromptConfirmDelete,
     ];
 }
 
@@ -210,6 +292,65 @@ pub fn es(key: StringKey) -> &'static str {
         StringKey::CliHelpContextFit => "Prepara contexto con los fragmentos más relevantes.",
         StringKey::CliHelpHealth => "Verifica el estado del servicio.",
         StringKey::CliHelpCodeIndex => "Indexa un proyecto de código (Rust/Python).",
+        StringKey::CliHelpRoot => {
+            "Memento: memoria de agentes con tenancy, búsqueda y código (ES-first)."
+        }
+        StringKey::CliHelpTenant => {
+            "Administración del tenant: credenciales, retención, respaldos, exportación y borrado."
+        }
+        StringKey::CliHelpTenantDelete => {
+            "Borra el tenant: purga de datos, destrucción de claves y credenciales (requiere confirmación)."
+        }
+        StringKey::CliHelpTenantExport => {
+            "Exporta todos los datos del tenant en formato abierto (JSONL + tar.gz)."
+        }
+        StringKey::CliHelpTenantRetention => {
+            "Muestra o configura el horizonte de retención (días; 0 desactiva)."
+        }
+        StringKey::CliHelpTenantBackup => "Crea un respaldo cifrado del tenant.",
+        StringKey::CliHelpTenantRestore => "Restaura un respaldo (requiere almacén en reposo).",
+        StringKey::CliHelpTenantSweep => "Ejecuta la limpieza de retención inmediatamente.",
+        StringKey::CliHelpIngestDocument => "Ingresa un archivo de documento (14 formatos).",
+        StringKey::CliHelpIngestBulk => "Ingesta masiva de un directorio con informe por archivo.",
+        StringKey::CliHelpGetChunk => "Obtiene un fragmento de memoria por id.",
+        StringKey::CliHelpFeedback => "Registra retroalimentación de utilidad sobre un fragmento.",
+        StringKey::CliHelpStats => "Muestra estadísticas del almacén por workspace.",
+        StringKey::CliHelpCodeStatus => "Estado del índice de código (capas L1-L4).",
+        StringKey::CliHelpCodeDebug => {
+            "Diagnóstico del grafo del índice (nodos, aristas, integridad)."
+        }
+        StringKey::CliHelpJson => "Salida en JSON (REQ-CL-003).",
+        StringKey::CliHelpNoEmbeddings => "Sin embeddings (REQ-MC-004).",
+        StringKey::CliHelpRootArg => "Raíz de almacenamiento (por defecto ~/.memento).",
+        StringKey::CliHelpLocaleArg => "Idioma de la interfaz: es | en.",
+        StringKey::CliHelpQueryArg => "Consulta de búsqueda.",
+        StringKey::CliHelpTextArg => "Texto a ingestar.",
+        StringKey::CliHelpTopKArg => "Cantidad de resultados (máx. 100).",
+        StringKey::CliHelpWorkspaceArg => "Workspace (por defecto el del tenant).",
+        StringKey::CliHelpRrfArg => "Búsqueda híbrida con RRF.",
+        StringKey::CliHelpNameArg => "Nombre del tenant.",
+        StringKey::CliHelpDaysArg => "Días de retención (0 desactiva).",
+        StringKey::CliHelpChunkArg => "Id del fragmento.",
+        StringKey::CliHelpDocArg => "Id del documento.",
+        StringKey::CliHelpUsefulArg => "Marca el fragmento como relevante.",
+        StringKey::CliHelpNotUsefulArg => "Marca el fragmento como irrelevante.",
+        StringKey::CliHelpReasonArg => "Motivo (opcional).",
+        StringKey::CliHelpBudgetArg => "Presupuesto de tokens.",
+        StringKey::CliHelpFileArg => "Archivo a ingestar.",
+        StringKey::CliHelpDirArg => "Directorio a ingestar en masa.",
+        StringKey::CliHelpSourceArg => "Fuente: text | markdown | document:<ext>.",
+        StringKey::CliHelpProjectArg => "Id de proyecto (por defecto: derivado de la ruta).",
+        StringKey::CliHelpBackupDirArg => "Directorio del respaldo (backups/<tid>/<ts>).",
+        StringKey::CliHelpPathArg => "Ruta del proyecto de código.",
+        StringKey::CliMsgTokenCreated => {
+            "Guarde este token: se muestra una sola vez y solo su hash queda almacenado."
+        }
+        StringKey::CliMsgTokenRotated => {
+            "Token rotado: el token anterior dejó de ser válido; reinicie el proceso."
+        }
+        StringKey::CliPromptConfirmDelete => {
+            "Escriba 'yes' para confirmar el borrado permanente del tenant {tid}:"
+        }
     }
 }
 
@@ -279,6 +420,63 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpContextFit => "Pack context from the most relevant chunks.",
         StringKey::CliHelpHealth => "Check service health.",
         StringKey::CliHelpCodeIndex => "Index a code project (Rust/Python).",
+        StringKey::CliHelpRoot => {
+            "Memento: agent memory with tenancy, search, and code knowledge (ES-first)."
+        }
+        StringKey::CliHelpTenant => {
+            "Tenant administration: credentials, retention, backups, export, and erasure."
+        }
+        StringKey::CliHelpTenantDelete => {
+            "Delete the tenant: data purge, key destruction, and credential removal (confirmation required)."
+        }
+        StringKey::CliHelpTenantExport => {
+            "Export all tenant data in an open format (JSONL + tar.gz)."
+        }
+        StringKey::CliHelpTenantRetention => {
+            "Show or set the retention horizon (days; 0 disables)."
+        }
+        StringKey::CliHelpTenantBackup => "Create an encrypted tenant backup.",
+        StringKey::CliHelpTenantRestore => "Restore a backup (requires a quiesced store).",
+        StringKey::CliHelpTenantSweep => "Run the retention sweep now.",
+        StringKey::CliHelpIngestDocument => "Ingest a document file (14 formats).",
+        StringKey::CliHelpIngestBulk => "Bulk-ingest a directory with a per-file report.",
+        StringKey::CliHelpGetChunk => "Fetch a memory chunk by id.",
+        StringKey::CliHelpFeedback => "Record usefulness feedback on a chunk.",
+        StringKey::CliHelpStats => "Show store statistics per workspace.",
+        StringKey::CliHelpCodeStatus => "Code index status (layers L1-L4).",
+        StringKey::CliHelpCodeDebug => "Index graph diagnostics (nodes, edges, integrity).",
+        StringKey::CliHelpJson => "JSON output (REQ-CL-003).",
+        StringKey::CliHelpNoEmbeddings => "No embeddings (REQ-MC-004).",
+        StringKey::CliHelpRootArg => "Storage root (default ~/.memento).",
+        StringKey::CliHelpLocaleArg => "Interface locale: es | en.",
+        StringKey::CliHelpQueryArg => "Search query.",
+        StringKey::CliHelpTextArg => "Text to ingest.",
+        StringKey::CliHelpTopKArg => "Result count (max 100).",
+        StringKey::CliHelpWorkspaceArg => "Workspace (defaults to the tenant's).",
+        StringKey::CliHelpRrfArg => "Hybrid search with RRF.",
+        StringKey::CliHelpNameArg => "Tenant name.",
+        StringKey::CliHelpDaysArg => "Retention days (0 disables).",
+        StringKey::CliHelpChunkArg => "Chunk id.",
+        StringKey::CliHelpDocArg => "Document id.",
+        StringKey::CliHelpUsefulArg => "Mark the chunk as useful.",
+        StringKey::CliHelpNotUsefulArg => "Mark the chunk as not useful.",
+        StringKey::CliHelpReasonArg => "Reason (optional).",
+        StringKey::CliHelpBudgetArg => "Token budget.",
+        StringKey::CliHelpFileArg => "File to ingest.",
+        StringKey::CliHelpDirArg => "Directory to bulk-ingest.",
+        StringKey::CliHelpSourceArg => "Source: text | markdown | document:<ext>.",
+        StringKey::CliHelpProjectArg => "Project id (default: derived from the path).",
+        StringKey::CliHelpBackupDirArg => "Backup directory (backups/<tid>/<ts>).",
+        StringKey::CliHelpPathArg => "Code project path.",
+        StringKey::CliMsgTokenCreated => {
+            "Save this token: it is shown only once and only its hash is stored."
+        }
+        StringKey::CliMsgTokenRotated => {
+            "Token rotated: the previous token is invalid; restart the process."
+        }
+        StringKey::CliPromptConfirmDelete => {
+            "Type 'yes' to confirm permanent deletion of tenant {tid}:"
+        }
     }
 }
 
