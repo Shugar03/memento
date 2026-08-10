@@ -10,6 +10,7 @@ pub mod fts;
 pub mod maintenance;
 pub mod schema;
 pub mod store;
+pub mod symbols;
 pub mod vector;
 
 pub use fts::{MAX_TOP_K, ensure_fts_index, full_text_search};
@@ -19,6 +20,7 @@ pub use maintenance::{
 };
 pub use schema::{CHUNKS, DOCS, FEEDBACK, SYMBOLS, chunks_scope, tenant_scope, workspace_scope};
 pub use store::{LanceStore, map_error};
+pub use symbols::{SymbolInput, SymbolRow, count_symbols, lookup_symbols, replace_symbols};
 pub use vector::{add_chunks_batch, ensure_vector_index, vector_search};
 
 use async_trait::async_trait;
