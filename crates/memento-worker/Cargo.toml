@@ -5,10 +5,28 @@ edition.workspace = true
 license.workspace = true
 description = "Memento RS background worker: retention sweep, maintenance and backups."
 
+[[bin]]
+name = "memento-worker"
+path = "src/main.rs"
+
 [dependencies]
+# The worker is a separate process over the application use cases: it opens
+# the bound tenant (REQ-TA-002/003) and drives sweep/maintenance/backup.
+memento-domain = { path = "../memento-domain" }
+memento-ports = { path = "../memento-ports" }
+memento-application = { path = "../memento-application" }
+memento-tenant = { path = "../memento-tenant" }
+memento-lancedb = { path = "../memento-lancedb" }
 tokio.workspace = true
-tokio-cron-scheduler.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
+
+[dev-dependencies]
+memento-testkit = { path = "../memento-testkit" }
+assert_cmd.workspace = true
+predicates.workspace = true
