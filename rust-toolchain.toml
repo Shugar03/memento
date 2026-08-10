@@ -1,0 +1,11 @@
+[toolchain]
+# Pin to a specific stable version so the workspace builds reproducibly
+# across hosts (CI runner, local dev, Docker build stage, contributor
+# forks). The workspace uses edition 2024, which stabilized in 1.85.
+#
+# `cargo` will fetch the toolchain if it is missing. Update this file
+# when bumping the floor; the matching CI config (`.github/workflows/ci.yml`)
+# uses `dtolnay/rust-toolchain@1.85` and the Dockerfile uses the same tag.
+channel = "1.85"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

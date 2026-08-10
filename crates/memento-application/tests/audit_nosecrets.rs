@@ -130,14 +130,20 @@ async fn audit_lines_have_shape_and_never_carry_content_or_secrets() {
     app.backup(&ts.ctx()).await.expect("backup");
     app.export_tenant(&ts.ctx()).await.expect("export");
 
-    // erase (destroys keys; the audit of erase happens before the config
-    // file is removed — the log itself is not a tenant data file)
-    app.erase(&ts.ctx()).await.expect("erase");
-
-    // ---- scan every line ----
+    // Capture the audit log BEFORE erase (T-120: erase removes the audit
+    // file as part of the tenant footprint — the right-to-erase extends
+    // to the audit log too; we scan the pre-erase lines here).
     let raw = std::fs::read_to_string(audit_path(ts.root(), ts.tenant_id())).expect("audit file");
-    assert!(!raw.is_empty(), "battery produced audit lines");
+    assert!(!raw.is_empty(), "battery produced audit lines before erase");
     let lines: Vec<&str> = raw.lines().collect();
+
+    // erase (T-120: audit file is deleted as part of erasure — verify
+    // post-erase that the file is gone).
+    app.erase(&ts.ctx()).await.expect("erase");
+    assert!(
+        !audit_path(ts.root(), ts.tenant_id()).exists(),
+        "erase removes the audit file (T-120)"
+    );
 
     // Shape contract per line.
     for line in &lines {

@@ -23,3 +23,11 @@ tracing.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 memento-testkit = { path = "../memento-testkit" }
+# T-103: code-index benchmark gates (REQ-CK-002) live in benches/.
+criterion.workspace = true
+
+# Criterion supplies its own harness (criterion_main!); the default libtest
+# harness would wrap the bench file and never call the generated main.
+[[bench]]
+name = "code_index_bench"
+harness = false

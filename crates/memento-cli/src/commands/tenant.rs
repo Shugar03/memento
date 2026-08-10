@@ -220,7 +220,10 @@ async fn sweep(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     if is_json(m) {
         emit_json(&report)
     } else {
-        println!("sweep: {} expirados", report.expired_count);
+        println!(
+            "sweep: {} chunks expirados, {} líneas de auditoría expiradas",
+            report.expired_count, report.audit_expired_count
+        );
         Ok(())
     }
 }
