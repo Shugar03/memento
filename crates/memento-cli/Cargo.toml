@@ -1,0 +1,20 @@
+[package]
+name = "memento-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS command-line surface (clap v4)."
+
+[dependencies]
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true

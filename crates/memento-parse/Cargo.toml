@@ -1,0 +1,17 @@
+[package]
+name = "memento-parse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS document parsing (anydoc subprocess + fallback) and deterministic chunking."
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+text-splitter.workspace = true
+tokenizers.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
