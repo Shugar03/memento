@@ -290,7 +290,7 @@ mod tests {
         assert!(line["provenance"]["embedding_model_version"].is_string());
         assert_eq!(
             line["vector"].as_array().map(|v| v.len()),
-            Some(384),
+            Some(768),
             "vector exported"
         );
         assert!(

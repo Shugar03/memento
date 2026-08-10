@@ -53,13 +53,13 @@ pub fn deterministic_embed(text: &str, dim: usize) -> Vec<f32> {
 /// [`EmbedPort`] fake backed by [`deterministic_embed`].
 #[derive(Debug, Clone)]
 pub struct StubEmbedPort {
-    /// Vector dimension (defaults to the E5-small 384 used in production).
+    /// Vector dimension (defaults to the E5-base 768 used in production).
     pub dim: usize,
 }
 
 impl Default for StubEmbedPort {
     fn default() -> Self {
-        Self { dim: 384 }
+        Self { dim: 768 }
     }
 }
 
@@ -80,16 +80,16 @@ mod tests {
     #[test]
     fn fake_embed_is_deterministic() {
         // Same text → same vector, across calls.
-        let a = deterministic_embed("la memoria es un río", 384);
-        let b = deterministic_embed("la memoria es un río", 384);
+        let a = deterministic_embed("la memoria es un río", 768);
+        let b = deterministic_embed("la memoria es un río", 768);
         assert_eq!(a, b);
 
         // Different texts → different vectors.
-        let c = deterministic_embed("la memoria es un lago", 384);
+        let c = deterministic_embed("la memoria es un lago", 768);
         assert_ne!(a, c, "different text must hash to a different vector");
 
-        // Dimension contract: 384 (E5-small), matching the storage schema.
-        assert_eq!(a.len(), 384);
+        // Dimension contract: 768 (E5-base), matching the storage schema.
+        assert_eq!(a.len(), 768);
     }
 
     #[test]
@@ -107,7 +107,7 @@ mod tests {
             .await
             .expect("stub never fails");
         assert_eq!(out.len(), 3);
-        assert_eq!(out[0], deterministic_embed("uno", 384));
-        assert_eq!(out[2], deterministic_embed("tres", 384));
+        assert_eq!(out[0], deterministic_embed("uno", 768));
+        assert_eq!(out[2], deterministic_embed("tres", 768));
     }
 }

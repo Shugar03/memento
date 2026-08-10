@@ -58,6 +58,35 @@ ships (CLI, MCP server, worker). Exact resolved versions live in
 |---|---|---|---|
 | `crates/memento-parse/assets/spanish-tokenizer.json` | HF `dccuchile/bert-base-spanish-wwm-uncased` (tokenizer.json, ~486 KiB) | Apache-2.0 | Deterministic, offline chunking (REQ-MC-003): identical bytes on every machine ⇒ identical chunk boundaries. Embedded via `include_bytes!` (also the D6 context_fit budget tokenizer). First-run model download (ONNX) is unaffected — see `docs/ci.md`. |
 
+## MultilingualE5Base (2026-08-10 swap)
+
+Default embedder is now `fastembed::EmbeddingModel::MultilingualE5Base`
+(768 dims, ~250 MB ONNX), replacing `MultilingualE5Small` (384 dims,
+~130 MB ONNX). Picked because Phase 1 v3 showed E5Small's ES↔EN alignment
+was too weak for the Spanish-first persona — paraphrase queries like
+"como escribir titulos magneticos" returned empty or off-topic results on
+EN-only corpora. E5Base has the same Multilingual E5 family alignment
+properties with 2× the parameters and a more discriminative 768-d
+embedding space, which materially improves cross-lingual cosine ranking
+on small corpora (the typical LATAM startup corpus size).
+
+The `embedder` crate's `MODEL_VERSION` and the application layer's
+`EMBEDDING_MODEL_VERSION` are pinned to `multilingual-e5-base-v0.0.3`.
+The LanceDB `chunks` schema column `vector` (FixedSizeList(Float32,
+768)) and the testkit's `StubEmbedPort` were bumped together so
+production and tests stay in lockstep. The vector index `n_pq = dim/4`
+goes from 96 to 192 (the IVF-PQ builder in
+`crates/memento-lancedb/src/vector.rs` derives this from
+`EMBEDDING_DIM`, no extra config). Tenants indexed with E5Small must
+re-ingest against an E5Base tenant (or be re-embedded in place) before
+queries return coherent results — vectors of different dimensions are
+not comparable.
+
+Bump policy: when fastembed ships a new E5 model version, update
+`MODEL_VERSION` (and mirror it in `memento_application::EMBEDDING_MODEL_VERSION`),
+refresh the `Cargo.lock`, and re-run the Phase 1 v3 ES-paraphrase
+queries to confirm the alignment improvement is preserved.
+
 ## Externally blocked work
 
 - T-040+ (`memento-okf` index) depends on the okf-rs pin above.
@@ -67,7 +96,7 @@ ships (CLI, MCP server, worker). Exact resolved versions live in
 
 | Dependency | Choice | Why |
 |---|---|---|
-| `fastembed` | `default-features = false` + `["ort-load-dynamic", "hf-hub-rustls-tls"]` | Defaults pull `image-models` (→ `image` → `zune-jpeg` — see below) and `ort-download-binaries-native-tls` (no prebuilt onnxruntime for `x86_64-pc-windows-gnu`; native-tls needs OpenSSL on GNU). `ort-load-dynamic` loads `onnxruntime` at runtime (ship the DLL/`.so` with the app; see `onnxruntime` row below), `hf-hub-rustls-tls` is pure-Rust TLS. Text models are unconditional in fastembed 5.x. CLIP/image models stay deferred per design; re-enabling `image-models` later requires the zune-jpeg fix below first. |
+| `fastembed` | `default-features = false` + `["ort-load-dynamic", "hf-hub-rustls-tls"]` | Defaults pull `image-models` (→ `image` → `zune-jpeg` — see below) and `ort-download-binaries-native-tls` (no prebuilt onnxruntime for `x86_64-pc-windows-gnu`; native-tls needs OpenSSL on GNU). `ort-load-dynamic` loads `onnxruntime` at runtime (ship the DLL/`.so` with the app; see `onnxruntime` row below), `hf-hub-rustls-tls` is pure-Rust TLS. Text models are unconditional in fastembed 5.x. CLIP/image models stay deferred per design; re-enabling `image-models` later requires the zune-jpeg fix below first. **Default text model is `MultilingualE5Base` (768d, ~250 MB ONNX) — see "MultilingualE5Base (2026-08-10 swap)" below for the rationale and the 2026-08-10 swap from E5Small.** |
 | `onnxruntime` (vendored 1.28.0) | `crates/memento-embed-fastembed/vendor/onnxruntime/lib/onnxruntime.dll` (15.1 MB) | `ort` 2.0.0-rc.13 is compiled against the ONNX Runtime 1.28 API (`ort_sys::ORT_API_VERSION = 28`). The `ort-load-dynamic` feature resolves `onnxruntime.dll` via the standard Windows search order (cwd → PATH → `System32`), and `C:\Windows\System32\onnxruntime.dll` 1.17.260311 (shipped by Edge / DirectML / Microsoft Store) is rejected with `LoadError::BadVersion { version_str: "1.17.1" }` and poisons the ort `OnceLock`, panicking on the next embed call. Fix: vendor the 1.28.0 DLL inside the crate and let `dylib.rs` call `ort::init_from(<baked path>)` before any `fastembed::TextEmbedding::try_new`. Build script (`build.rs`) panics if the DLL is missing, baking the absolute path into `ORT_DYLIB_PATH_BAKED` for compile-time resolution. Override order at runtime: `ORT_DYLIB_PATH` env var > baked path > `<exe-dir>/onnxruntime.dll` > `./onnxruntime.dll`. Source: <https://github.com/microsoft/onnxruntime/releases/tag/v1.28.0> (`onnxruntime-win-x64-1.28.0.zip`, CPU provider). Bump policy: when fastembed upgrades to an ort version requiring a new ORT API major, update the vendored DLL to the matching `onnxruntime-win-x64-<version>.zip` release and verify `cargo test -p memento-embed-fastembed` plus an end-to-end `memento ingest text` pass. |
 | `zune-jpeg` (transitive) | NOT patched; documented | `0.5.15` (latest stable, 2026-03-26) fails on rustc 1.97: `warn!(...)` in expression position (`mcu_prog.rs:463`). Upstream fix exists on `dev` (commit `0346b875169ed528e206441c97899d99002e17ca`, zune-image repo); only pre-release `0.5.16-rc1` (2026-08-07) exists. Recipe when needed: `[patch.crates-io] zune-jpeg = { git = "https://github.com/etemesi254/zune-image", rev = "<fixed-sha>" }`. |
 | `tokenizers` | `"0.22"` instead of `"0.23"` | fastembed 5.x requires `^0.22.2`; aligning the workspace pin avoids building two tokenizers copies. |

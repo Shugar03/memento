@@ -96,7 +96,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
-                dim: 384,
+                dim: 768,
             }
         }
 
@@ -149,7 +149,7 @@ mod tests {
         let out = embedder.embed(&refs).await.expect("embed");
 
         assert_eq!(out.len(), 65, "all texts embedded");
-        assert_eq!(out[0], memento_testkit::deterministic_embed("texto 0", 384));
+        assert_eq!(out[0], memento_testkit::deterministic_embed("texto 0", 768));
         assert_eq!(
             backend.call_sizes(),
             vec![64, 1],

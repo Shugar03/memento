@@ -1,7 +1,7 @@
 //! T-103 — embedding latency bench (informational; no spec budget).
 //!
 //! Measures the REAL fastembed backend (`FastEmbedBackend`, MultilingualE5
-//! Small, 384 dims) at the production batch size (64 texts, T-024
+//! Small, 768 dims) at the production batch size (64 texts, T-024
 //! boundary). The model downloads on first run (~500 MB, documented risk
 //! R1); the bench SKIPS honestly when the model is not cached and
 //! `MEMENTO_BENCH_EMBED` is not set — a skipped embed bench never pretends

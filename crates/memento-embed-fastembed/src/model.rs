@@ -1,6 +1,6 @@
 //! Embedding model loader (T-023).
 //!
-//! Wraps fastembed's `TextEmbedding` (MultilingualE5Small, 384 dims) behind a
+//! Wraps fastembed's `TextEmbedding` (MultilingualE5Base, 768 dims) behind a
 //! small [`EmbeddingBackend`] trait so tests can inject deterministic stubs
 //! (no ONNX download, per testing-capabilities). [`ModelLoader`] owns the
 //! lazy, single-flight initialization and the `--no-embeddings` mode: when
@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 /// Model version stamped on every chunk (REQ-MC-006) and checked on
 /// retrieval (EMBEDDING_MODEL_MISMATCH surface).
-pub const MODEL_VERSION: &str = "multilingual-e5-small-v0.0.3";
+pub const MODEL_VERSION: &str = "multilingual-e5-base-v0.0.3";
 /// Embedding dimension (must match the lancedb chunks schema).
-pub const EMBEDDING_DIM: usize = 384;
+pub const EMBEDDING_DIM: usize = 768;
 /// Texts per inference batch (fastembed internal batching, T-024 boundary).
 pub const MAX_BATCH: usize = 64;
 
@@ -45,7 +45,7 @@ impl FastEmbedBackend {
         // which is compiled against the 1.28 API). Idempotent: the
         // internal `OnceLock` absorbs concurrent first-callers.
         crate::dylib::ensure_loaded();
-        let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Small)
+        let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Base)
             .with_cache_dir(cache_dir)
             .with_show_download_progress(false);
         let model =
@@ -208,7 +208,7 @@ mod tests {
 
     impl CountingBackend {
         fn new() -> Self {
-            Self { dim: 384 }
+            Self { dim: 768 }
         }
     }
 
@@ -321,13 +321,13 @@ mod tests {
         );
         assert!(loader.is_enabled());
         let out = loader.embed(&["memoria"]).expect("embed").expect("enabled");
-        assert_eq!(out[0], memento_testkit::deterministic_embed("memoria", 384));
+        assert_eq!(out[0], memento_testkit::deterministic_embed("memoria", 768));
     }
 
     #[test]
     fn model_version_contract() {
-        assert_eq!(MODEL_VERSION, "multilingual-e5-small-v0.0.3");
-        assert_eq!(EMBEDDING_DIM, 384);
+        assert_eq!(MODEL_VERSION, "multilingual-e5-base-v0.0.3");
+        assert_eq!(EMBEDDING_DIM, 768);
         assert_eq!(MAX_BATCH, 64);
     }
 }

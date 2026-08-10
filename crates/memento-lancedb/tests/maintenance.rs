@@ -25,7 +25,7 @@ fn chunk_at(
         doc_id,
         chunk_id,
         created_at,
-        embedding_model_version: "multilingual-e5-small-v0.0.3".to_string(),
+        embedding_model_version: "multilingual-e5-base-v0.0.3".to_string(),
         tenant_id,
         workspace_id,
         agent_id: agent_id.clone(),
@@ -37,7 +37,7 @@ fn chunk_at(
         agent_id,
         doc_id,
         text: text.to_string(),
-        vector: Some(deterministic_embed(text, 384)),
+        vector: Some(deterministic_embed(text, 768)),
         created_at,
         provenance,
     }

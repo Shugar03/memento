@@ -59,8 +59,8 @@ pub const COL_SIGNATURE: &str = "signature";
 /// probe; lives on the docs table so `MemoryChunk` stays domain-clean).
 pub const COL_CONTENT_HASH: &str = "content_hash";
 
-/// Embedding dimension for the chunks vector column (E5-small, 384d).
-pub const EMBEDDING_DIM: usize = 384;
+/// Embedding dimension for the chunks vector column (E5-base, 768d).
+pub const EMBEDDING_DIM: usize = 768;
 
 /// FTS index name over [`COL_TEXT`] (idempotent index creation).
 pub const FTS_INDEX_NAME: &str = "chunks_text_fts";

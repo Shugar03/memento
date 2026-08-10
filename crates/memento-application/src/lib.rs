@@ -65,7 +65,7 @@ use std::sync::{Arc, Mutex};
 /// Embedding model version stamped on every chunk (REQ-MC-004). Mirrors
 /// `memento_embed_fastembed::model::MODEL_VERSION`; duplicated here because
 /// the embedder is injected as a port and the schema must know the model.
-pub const EMBEDDING_MODEL_VERSION: &str = "multilingual-e5-small-v0.0.3";
+pub const EMBEDDING_MODEL_VERSION: &str = "multilingual-e5-base-v0.0.3";
 
 /// Max document blob accepted by `ingest_document` (design MC Q4: 10 MB).
 pub const MAX_BLOB_BYTES: u64 = 10 * 1024 * 1024;
@@ -309,7 +309,7 @@ pub(crate) mod test_util {
     }
 
     /// The standard test app: real LanceDB on a temp dir, deterministic
-    /// stub embedder (384-d), real fallback parse boundary, fixed clock.
+    /// stub embedder (768-d), real fallback parse boundary, fixed clock.
     pub(crate) async fn test_app(ts: &TempStore, clock: TestClock) -> AppService {
         AppService::open(
             &ts.ctx(),

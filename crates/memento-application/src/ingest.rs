@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(chunk.provenance.chunk_id, chunk.id);
         assert!(!chunk.provenance.embedding_model_version.is_empty());
         // REQ-MC-004: vector populated from day 1 (stub embedder).
-        assert_eq!(chunk.vector.as_ref().expect("vector present").len(), 384);
+        assert_eq!(chunk.vector.as_ref().expect("vector present").len(), 768);
 
         // Searchable immediately (atomic visibility, REQ-MC-007).
         let hits = app
@@ -699,7 +699,7 @@ mod tests {
             .await
             .expect("ingest ok");
         assert!(result.chunk_ids.len() > 64, "fixture spans batches");
-        // Every chunk carries a 384-d vector (stub) — batch boundaries did
+        // Every chunk carries a 768-d vector (stub) — batch boundaries did
         // not corrupt alignment.
         for id in result.chunk_ids.iter().take(70) {
             let chunk = app
@@ -708,7 +708,7 @@ mod tests {
                 .await
                 .expect("read")
                 .expect("exists");
-            assert_eq!(chunk.vector.expect("vector").len(), 384);
+            assert_eq!(chunk.vector.expect("vector").len(), 768);
         }
     }
 

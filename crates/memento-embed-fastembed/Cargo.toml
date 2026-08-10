@@ -3,7 +3,7 @@ name = "memento-embed-fastembed"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Memento RS embedding adapter over fastembed (MultilingualE5Small, 384 dims)."
+description = "Memento RS embedding adapter over fastembed (MultilingualE5Base, 768 dims)."
 
 [dependencies]
 fastembed.workspace = true

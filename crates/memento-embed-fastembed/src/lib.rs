@@ -1,6 +1,6 @@
 //! memento-embed-fastembed — embedding adapter (design D1/D8).
 //!
-//! MultilingualE5Small (384 dims) via fastembed with `ort-load-dynamic`
+//! MultilingualE5Base (768 dims) via fastembed with `ort-load-dynamic`
 //! (no prebuilt onnxruntime for windows-gnu — see docs/dependencies.md).
 //! [`model::ModelLoader`] is lazy, single-flight and `--no-embeddings`
 //! aware (REQ-MC-004); [`embedder::FastEmbedEmbedder`] exposes it through

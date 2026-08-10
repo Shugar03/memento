@@ -19,7 +19,7 @@ fn chunk(ts: &TempStore, text: &str, workspace_id: WorkspaceId, doc_id: DocId) -
         doc_id,
         chunk_id,
         created_at,
-        embedding_model_version: "multilingual-e5-small-v0.0.3".to_string(),
+        embedding_model_version: "multilingual-e5-base-v0.0.3".to_string(),
         tenant_id,
         workspace_id,
         agent_id: agent_id.clone(),
@@ -31,7 +31,7 @@ fn chunk(ts: &TempStore, text: &str, workspace_id: WorkspaceId, doc_id: DocId) -
         agent_id,
         doc_id,
         text: text.to_string(),
-        vector: Some(deterministic_embed(text, 384)),
+        vector: Some(deterministic_embed(text, 768)),
         created_at,
         provenance,
     }
@@ -155,7 +155,7 @@ async fn vector_search_returns_ranked() {
         .await
         .expect("add");
 
-    let query_vec = deterministic_embed("cerveza artesanal lúpulo", 384);
+    let query_vec = deterministic_embed("cerveza artesanal lúpulo", 768);
     let ranked = vector_search(&store, &ts.ctx(), &query_vec, &ws, 3)
         .await
         .expect("vector search");

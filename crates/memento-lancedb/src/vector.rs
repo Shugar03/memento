@@ -128,7 +128,7 @@ pub async fn ensure_vector_index(store: &LanceStore) -> Result<(), DomainError> 
         return Ok(());
     }
 
-    // n_pq = dim / 4 → 96 codes for the 384-d E5-small vectors.
+    // n_pq = dim / 4 → 192 codes for the 768-d E5-base vectors.
     let num_sub_vectors = (EMBEDDING_DIM / 4) as u32;
     let builder = IvfPqIndexBuilder::default().num_sub_vectors(num_sub_vectors);
     table

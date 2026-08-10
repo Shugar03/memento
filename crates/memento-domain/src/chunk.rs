@@ -77,7 +77,7 @@ mod tests {
             doc_id,
             chunk_id,
             created_at: Utc::now(),
-            embedding_model_version: "multilingual-e5-small-v0.0.3".to_string(),
+            embedding_model_version: "multilingual-e5-base-v0.0.3".to_string(),
             tenant_id,
             workspace_id,
             agent_id: agent_id.clone(),
