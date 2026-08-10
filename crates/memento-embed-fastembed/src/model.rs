@@ -39,6 +39,12 @@ impl FastEmbedBackend {
     /// (design D8: `models/`); the first call downloads them (documented,
     /// avoidable with `--no-embeddings` — REQ-CG-004).
     pub fn try_new(cache_dir: PathBuf) -> Result<Self, DomainError> {
+        // Pre-load the vendored ONNX Runtime dylib before any fastembed
+        // call reaches the ort C ABI. See `dylib.rs` for the full
+        // rationale (System32's 1.17.x is rejected by ort 2.0.0-rc.13
+        // which is compiled against the 1.28 API). Idempotent: the
+        // internal `OnceLock` absorbs concurrent first-callers.
+        crate::dylib::ensure_loaded();
         let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Small)
             .with_cache_dir(cache_dir)
             .with_show_download_progress(false);

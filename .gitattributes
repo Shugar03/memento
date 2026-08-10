@@ -1,0 +1,6 @@
+# Vendored ONNX Runtime 1.28.0 binary (15.1 MB) for memento-embed-fastembed.
+# Git must treat this as a binary blob (no diffs, no CRLF mangling, no
+# merge conflicts). The crate's build script validates the file is present
+# at build time; if it ever disappears the panic message points at the
+# release URL.
+crates/memento-embed-fastembed/vendor/onnxruntime/lib/onnxruntime.dll binary

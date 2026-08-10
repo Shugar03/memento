@@ -4208,6 +4208,7 @@ dependencies = [
  "memento-domain",
  "memento-ports",
  "memento-testkit",
+ "ort",
  "tokio",
  "tracing",
 ]

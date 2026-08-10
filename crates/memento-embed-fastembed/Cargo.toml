@@ -7,6 +7,12 @@ description = "Memento RS embedding adapter over fastembed (MultilingualE5Small,
 
 [dependencies]
 fastembed.workspace = true
+# `ort` is a transitive dep of `fastembed`. We pin a workspace-wide
+# matching feature set so the same `ort-load-dynamic` semantic is
+# available to the explicit `ort::init_from` pre-load in `dylib.rs`.
+# Without this dep, `init_from` is not in scope (transitive only).
+# The version range matches fastembed 5.17.x's ort pin (^2.0.0-rc.13).
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }
 memento-domain = { path = "../memento-domain" }
 memento-ports = { path = "../memento-ports" }
 async-trait.workspace = true

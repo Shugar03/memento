@@ -6,6 +6,7 @@
 //! aware (REQ-MC-004); [`embedder::FastEmbedEmbedder`] exposes it through
 //! the [`EmbedPort`] trait with 64-text batches.
 
+pub mod dylib;
 pub mod embedder;
 pub mod model;
 

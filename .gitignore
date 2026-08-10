@@ -20,5 +20,11 @@ dist/
 coverage/
 *.log
 
+# Local agent tooling (skill registry, opencode config) — not part of
+# the project; regenerated per-machine by `gentle-ai skill-registry refresh`
+# and `opencode` itself.
+.atl/
+.opencode/
+
 # NOTE: Cargo.lock IS committed on purpose — this workspace ships binaries
 # (CLI, MCP server, worker) and locked builds are required.
