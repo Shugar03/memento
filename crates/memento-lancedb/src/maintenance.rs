@@ -248,6 +248,7 @@ pub async fn sweep_expired(
         expired_count: result.num_deleted_rows as usize,
         freed_bytes: 0,
         chore_id: ChoreId::new(),
+        audit_expired_count: 0,
     })
 }
 

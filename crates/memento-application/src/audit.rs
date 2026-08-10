@@ -16,6 +16,14 @@
 //!
 //! The logger also emits a `tracing::info!` event per line (structured
 //! tracing → JSONL, per the design).
+//!
+//! ## Retention (T-120)
+//!
+//! Audit retention mirrors data retention by default (30 d, REQ-ML-003):
+//! see [`crate::sweep`] for the sweep that drops expired JSONL lines.
+//! `0` opts the tenant out (audit retained indefinitely). The file is
+//! fully removed on tenant erasure (GDPR Art. 17 — the audit is part of
+//! the tenant's footprint).
 
 use memento_domain::{AgentId, ChoreId, DomainError, TenantContext, TenantId};
 use serde::Serialize;
@@ -149,6 +157,92 @@ impl AuditLogger {
             chore_id,
         })
     }
+
+    /// Sweep expired audit lines (T-120). Lines whose `ts` is strictly
+    /// older than `cutoff` are removed; the file is rewritten atomically
+    /// (temp + rename, same pattern as the credential store). Malformed
+    /// lines are kept as-is to avoid dropping evidence that the audit
+    /// pipeline may be relying on for incident response.
+    ///
+    /// Returns the number of lines removed.
+    ///
+    /// # Errors
+    ///
+    /// * `Io` — the file cannot be read or the temp file cannot be written.
+    pub fn sweep_expired(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<usize, DomainError> {
+        use std::io::{BufRead, BufReader, Write};
+
+        let path = self.log_path();
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => return Err(DomainError::Io { source: err }),
+        };
+        let reader = BufReader::new(file);
+
+        let mut kept: Vec<String> = Vec::new();
+        let mut removed = 0usize;
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(err) => return Err(DomainError::Io { source: err }),
+            };
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<serde_json::Value>(&line) {
+                Ok(v) => {
+                    let ts_str = v.get("ts").and_then(|x| x.as_str()).unwrap_or("");
+                    let line_ts = chrono::DateTime::parse_from_rfc3339(ts_str)
+                        .map(|t| t.with_timezone(&chrono::Utc))
+                        .ok();
+                    match line_ts {
+                        Some(ts) if ts < cutoff => {
+                            removed += 1;
+                        }
+                        _ => kept.push(line),
+                    }
+                }
+                Err(_) => kept.push(line), // keep malformed
+            }
+        }
+
+        if removed == 0 {
+            return Ok(0);
+        }
+
+        // Atomic rewrite: write to .<pid>.tmp, then rename over the live
+        // file. The audit logger holds a `Mutex<File>` on the live path;
+        // we write to a sibling temp and rename, so concurrent appenders
+        // either see the old file (and the rename overwrites after the
+        // rename — appends between read and rename are LOST on this
+        // host). Audit sweeps run from the worker between runs (T-090,
+        // graceful-shutdown semantic), so the race window is the same
+        // operator-driven window as the existing rotation sweep.
+        let tmp = path.with_extension(format!("jsonl.sweep-{}.tmp", std::process::id()));
+        let mut out = std::fs::File::create(&tmp).map_err(|source| DomainError::Io { source })?;
+        for line in &kept {
+            writeln!(out, "{line}").map_err(|source| DomainError::Io { source })?;
+        }
+        out.flush().map_err(|source| DomainError::Io { source })?;
+        drop(out);
+        std::fs::rename(&tmp, &path).map_err(|source| DomainError::Io { source })?;
+        Ok(removed)
+    }
+
+    /// Delete the audit log file entirely (used by tenant erasure, REQ-CG-001).
+    /// Idempotent: returns `true` if the file existed and was removed,
+    /// `false` if it was already absent.
+    pub fn erase(&self) -> Result<bool, DomainError> {
+        match std::fs::remove_file(self.log_path()) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(DomainError::Io { source: err }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -217,5 +311,95 @@ mod tests {
         logger.ok(&ctx, "feedback", json!({"chunk_id": ChunkId::new()}), None);
         let raw = std::fs::read_to_string(logger.log_path()).expect("audit file");
         assert!(raw.contains("\"agent_id\":\"agente-x\""), "{raw}");
+    }
+
+    #[test]
+    fn sweep_expired_removes_only_old_lines() {
+        // T-120: lines older than `cutoff` are removed; lines at/after
+        // `cutoff` are kept; malformed lines are kept (preserve evidence).
+        let ts = TempStore::new();
+        let logger = AuditLogger::new(ts.root(), ts.tenant_id()).expect("logger");
+        let _ctx = ts.ctx();
+
+        let old_ts = chrono::Utc::now() - chrono::Duration::days(60);
+        let fresh_ts = chrono::Utc::now() - chrono::Duration::days(5);
+
+        // Plant an old + a fresh + a malformed line by writing the file
+        // directly (logger.record stamps `now()` which we cannot pin).
+        let mut old = serde_json::to_string(&serde_json::json!({
+            "ts": old_ts.to_rfc3339(),
+            "tenant_id": ts.tenant_id().to_string(),
+            "agent_id": "test-agent",
+            "action": "ingest",
+            "target": {"doc_id": "old"},
+            "outcome": "ok",
+            "error_code": null,
+            "chore_id": null,
+        }))
+        .unwrap();
+        let mut fresh = serde_json::to_string(&serde_json::json!({
+            "ts": fresh_ts.to_rfc3339(),
+            "tenant_id": ts.tenant_id().to_string(),
+            "agent_id": "test-agent",
+            "action": "search",
+            "target": {"hits": 1},
+            "outcome": "ok",
+            "error_code": null,
+            "chore_id": null,
+        }))
+        .unwrap();
+        // Ensure trailing newline (file is JSONL).
+        old.push('\n');
+        fresh.push('\n');
+        let malformed = "this is not valid json\n".to_string();
+
+        std::fs::write(logger.log_path(), format!("{old}{fresh}{malformed}"))
+            .expect("plant audit lines");
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
+        let removed = logger.sweep_expired(cutoff).expect("sweep ok");
+        assert_eq!(removed, 1, "only the old line is past TTL");
+
+        let raw = std::fs::read_to_string(logger.log_path()).expect("audit file");
+        assert!(!raw.contains("\"doc_id\":\"old\""), "old line removed");
+        assert!(raw.contains("\"hits\":1"), "fresh line kept");
+        assert!(raw.contains("this is not valid json"), "malformed kept");
+
+        // A second sweep with the same cutoff removes nothing.
+        let removed2 = logger.sweep_expired(cutoff).expect("sweep ok");
+        assert_eq!(removed2, 0, "idempotent");
+    }
+
+    #[test]
+    fn sweep_expired_on_missing_file_is_zero() {
+        // T-120: no audit file yet → sweep is a no-op (returns 0).
+        let ts = TempStore::new();
+        let logger = AuditLogger::new(ts.root(), ts.tenant_id()).expect("logger");
+        std::fs::remove_file(logger.log_path()).expect("no file");
+        let removed = logger
+            .sweep_expired(chrono::Utc::now())
+            .expect("missing file is fine");
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn erase_removes_the_file_and_is_idempotent() {
+        // T-120: tenant erasure removes the audit log file entirely.
+        let ts = TempStore::new();
+        let logger = AuditLogger::new(ts.root(), ts.tenant_id()).expect("logger");
+        logger.ok(
+            &ts.ctx(),
+            "ingest",
+            json!({"doc_id": "d1", "chunks": 1, "duplicate": false}),
+            None,
+        );
+        assert!(logger.log_path().exists());
+
+        assert!(logger.erase().expect("erase"), "first call returns true");
+        assert!(!logger.log_path().exists(), "file gone");
+        assert!(
+            !logger.erase().expect("erase"),
+            "idempotent: false on absent"
+        );
     }
 }

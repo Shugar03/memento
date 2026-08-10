@@ -24,11 +24,20 @@ pub struct DeleteReport {
 }
 
 /// Outcome of a retention sweep (REQ-ML-003, design D5).
+///
+/// `audit_expired_count` is the number of audit JSONL lines removed by
+/// the same sweep when the tenant has a per-tenant `audit_retention_days`
+/// override (T-120); default behavior is `0` (audit retention matches
+/// data retention and is reported by the same sweep).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SweepReport {
     pub expired_count: usize,
     pub freed_bytes: u64,
     pub chore_id: ChoreId,
+    /// Audit JSONL lines removed by the sweep (T-120). `0` when the
+    /// tenant opts out of audit retention (or when no line is past TTL).
+    #[serde(default)]
+    pub audit_expired_count: usize,
 }
 
 /// Lifecycle boundary: hard delete (REQ-ML-002), purge-chain maintenance

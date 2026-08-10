@@ -1,4 +1,4 @@
-//! Retention sweep (T-063, REQ-ML-003, design D5).
+//! Retention sweep (T-063, REQ-ML-003, design D5, T-120).
 //!
 //! The sweep removes chunks whose `created_at` is older than the tenant's
 //! effective retention horizon: `cutoff = now - retention_days`. The clock is
@@ -12,11 +12,16 @@
 //! (scenario 3 — nothing expires regardless of age). Setting a horizon is an
 //! audited configuration change (REQ-CG-002: relaxation must be explicit and
 //! audited).
+//!
+//! ## Audit sweep (T-120)
+//!
+//! The sweep ALSO removes audit JSONL lines past the tenant's effective
+//! `audit_retention_days` (defaults to `retention_days`, see
+//! [`TenantConfig::effective_audit_retention_days`]). Opt-out (`0`)
+//! skips the audit sweep — the audit file lives until tenant erasure.
 
 use crate::AppService;
-use crate::tenant_config::{
-    RETENTION_DISABLED, TenantConfig, read_tenant_config, write_tenant_config,
-};
+use crate::tenant_config::{RETENTION_DISABLED, read_tenant_config, write_tenant_config};
 use memento_domain::{DomainError, TenantContext};
 use memento_ports::SweepReport;
 use serde_json::json;
@@ -29,21 +34,28 @@ impl AppService {
         Ok(read_tenant_config(&self.root, ctx.tenant_id()).retention_days)
     }
 
+    /// The tenant's effective audit-log retention horizon in days
+    /// (T-120). Defaults to [`Self::retention_days`] when `audit_days`
+    /// is unset; `0` opts the tenant out (audit retained indefinitely
+    /// until tenant erasure).
+    pub fn audit_retention_days(&self, ctx: &TenantContext) -> Result<u64, DomainError> {
+        self.ensure_bound_tenant(ctx)?;
+        Ok(read_tenant_config(&self.root, ctx.tenant_id()).effective_audit_retention_days())
+    }
+
     /// Set the retention horizon (audited configuration change, REQ-CG-002).
-    /// `days = 0` opts the tenant out of retention entirely.
+    /// `days = 0` opts the tenant out of retention entirely. Audit retention
+    /// is NOT touched here — use [`Self::set_audit_retention_days`] for
+    /// the audit-specific override (T-120).
     pub async fn set_retention_days(
         &self,
         ctx: &TenantContext,
         days: u64,
     ) -> Result<(), DomainError> {
         self.ensure_bound_tenant(ctx)?;
-        write_tenant_config(
-            &self.root,
-            ctx.tenant_id(),
-            &TenantConfig {
-                retention_days: days,
-            },
-        )?;
+        let mut cfg = read_tenant_config(&self.root, ctx.tenant_id());
+        cfg.retention_days = days;
+        write_tenant_config(&self.root, ctx.tenant_id(), &cfg)?;
         self.record_audit(
             ctx,
             "retention_change",
@@ -56,9 +68,45 @@ impl AppService {
         Ok(())
     }
 
+    /// Set the audit-log retention horizon independently (T-120).
+    /// `days = 0` opts the tenant out (audit retained indefinitely);
+    /// missing on disk → falls back to mirroring the data retention.
+    /// Audited as a configuration change (REQ-CG-002).
+    pub async fn set_audit_retention_days(
+        &self,
+        ctx: &TenantContext,
+        days: Option<u64>,
+    ) -> Result<(), DomainError> {
+        self.ensure_bound_tenant(ctx)?;
+        let mut cfg = read_tenant_config(&self.root, ctx.tenant_id());
+        cfg.audit_retention_days = days;
+        write_tenant_config(&self.root, ctx.tenant_id(), &cfg)?;
+        let effective = cfg.effective_audit_retention_days();
+        self.record_audit(
+            ctx,
+            "audit_retention_change",
+            json!({
+                "audit_retention_days": days.map(|d| d as i64).unwrap_or(-1),
+                "effective_audit_retention_days": effective,
+                "action": match days {
+                    None => "mirror_data_retention",
+                    Some(0) => "opt_out",
+                    Some(d) if d > 30 => "relax",
+                    Some(_) => "tighten",
+                },
+            }),
+            None,
+        );
+        Ok(())
+    }
+
     /// Run the retention sweep: hard-delete every chunk older than
     /// `now - retention` (REQ-ML-003, design D5). Honors the per-tenant
     /// override; a disabled tenant sweeps nothing (opt-out).
+    ///
+    /// When `audit_retention_days` is enabled, the sweep also drops audit
+    /// JSONL lines past TTL (T-120). The audit count is reported in
+    /// [`SweepReport::audit_expired_count`].
     ///
     /// # Errors
     ///
@@ -66,31 +114,37 @@ impl AppService {
     ///   idempotent per row).
     pub async fn retention_sweep(&self, ctx: &TenantContext) -> Result<SweepReport, DomainError> {
         self.ensure_bound_tenant(ctx)?;
-        let days = self.retention_days(ctx)?;
-        if days == RETENTION_DISABLED {
-            let report = SweepReport {
+        let cfg = read_tenant_config(&self.root, ctx.tenant_id());
+
+        // Data sweep.
+        let mut report = if cfg.retention_days == RETENTION_DISABLED {
+            SweepReport {
                 expired_count: 0,
                 freed_bytes: 0,
                 chore_id: memento_domain::ChoreId::new(),
-            };
-            self.record_audit(
-                ctx,
-                "sweep",
-                json!({ "retention_days": "disabled", "expired_count": 0 }),
-                Some(report.chore_id),
-            );
-            return Ok(report);
+                audit_expired_count: 0,
+            }
+        } else {
+            let cutoff = self.clock.now() - chrono::Duration::days(cfg.retention_days as i64);
+            memento_lancedb::sweep_expired(&self.store, ctx, cutoff).await?
+        };
+
+        // Audit sweep (T-120): opt-out when audit_retention_days == 0.
+        let audit_days = cfg.effective_audit_retention_days();
+        if audit_days != RETENTION_DISABLED {
+            let audit_cutoff = self.clock.now() - chrono::Duration::days(audit_days as i64);
+            report.audit_expired_count = self.audit.sweep_expired(audit_cutoff)?;
         }
 
-        let cutoff = self.clock.now() - chrono::Duration::days(days as i64);
-        let report = memento_lancedb::sweep_expired(&self.store, ctx, cutoff).await?;
         self.record_audit(
             ctx,
             "sweep",
             json!({
-                "retention_days": days,
-                "cutoff": cutoff.to_rfc3339(),
+                "retention_days": cfg.retention_days,
+                "audit_retention_days": audit_days,
+                "cutoff": (self.clock.now() - chrono::Duration::days(cfg.retention_days as i64)).to_rfc3339(),
                 "expired_count": report.expired_count,
+                "audit_expired_count": report.audit_expired_count,
             }),
             Some(report.chore_id),
         );
@@ -200,5 +254,108 @@ mod tests {
         assert_eq!(reopened.retention_days(&ts.ctx()).expect("read"), 90);
         let report = reopened.retention_sweep(&ts.ctx()).await.expect("sweep");
         assert_eq!(report.expired_count, 0, "override honored after reopen");
+    }
+
+    #[tokio::test]
+    async fn sweep_drops_audit_lines_past_audit_retention_days() {
+        // T-120: audit retention defaults to data retention (30 d);
+        // a sweep with the clock advanced past the audit TTL removes the
+        // expired lines.
+        let ts = TempStore::new();
+        let now = chrono::Utc::now();
+        let app = test_app(&ts, TestClock::new(now - chrono::Duration::days(60))).await;
+        ingest(&app, &ts, "recuerdo de hace 60 días").await;
+
+        // Plant an old + a fresh audit line by writing the file directly.
+        let old_line = serde_json::to_string(&serde_json::json!({
+            "ts": (now - chrono::Duration::days(60)).to_rfc3339(),
+            "tenant_id": ts.tenant_id().to_string(),
+            "agent_id": "test-agent",
+            "action": "ingest",
+            "target": {"doc_id": "old"},
+            "outcome": "ok",
+            "error_code": null,
+            "chore_id": null,
+        }))
+        .unwrap();
+        let fresh_line = serde_json::to_string(&serde_json::json!({
+            "ts": (now - chrono::Duration::days(5)).to_rfc3339(),
+            "tenant_id": ts.tenant_id().to_string(),
+            "agent_id": "test-agent",
+            "action": "search",
+            "target": {"hits": 1},
+            "outcome": "ok",
+            "error_code": null,
+            "chore_id": null,
+        }))
+        .unwrap();
+        std::fs::write(app.audit_log_path(), format!("{old_line}\n{fresh_line}\n"))
+            .expect("plant audit lines");
+
+        // Re-open at "now" so the cutoff = now - 30 d drops the old line.
+        let fresh = test_app(&ts, TestClock::new(now)).await;
+        let report = fresh.retention_sweep(&ts.ctx()).await.expect("sweep");
+        assert_eq!(report.audit_expired_count, 1, "old audit line dropped");
+
+        let raw = std::fs::read_to_string(fresh.audit_log_path()).expect("audit file");
+        assert!(!raw.contains("\"doc_id\":\"old\""), "old line removed");
+        assert!(raw.contains("\"hits\":1"), "fresh line kept");
+        // The sweep ITSELF emits an audit line — so the post-sweep file
+        // has 1 keep + 1 sweep line, not just 1.
+        let fresh_count = raw.lines().filter(|l| l.contains("\"hits\":1")).count();
+        assert_eq!(fresh_count, 1);
+    }
+
+    #[tokio::test]
+    async fn sweep_audit_opt_out_keeps_lines_indefinitely() {
+        // T-120: explicit `audit_days = 0` opts the tenant out — the sweep
+        // removes zero audit lines regardless of age.
+        let ts = TempStore::new();
+        let now = chrono::Utc::now();
+        let app = test_app(&ts, TestClock::new(now - chrono::Duration::days(365))).await;
+        app.set_audit_retention_days(&ts.ctx(), Some(0))
+            .await
+            .expect("opt out");
+
+        // Plant an old audit line.
+        let old_line = serde_json::to_string(&serde_json::json!({
+            "ts": (now - chrono::Duration::days(365)).to_rfc3339(),
+            "tenant_id": ts.tenant_id().to_string(),
+            "agent_id": "test-agent",
+            "action": "ingest",
+            "target": {"doc_id": "very-old"},
+            "outcome": "ok",
+            "error_code": null,
+            "chore_id": null,
+        }))
+        .unwrap();
+        std::fs::write(app.audit_log_path(), format!("{old_line}\n")).expect("plant");
+
+        let fresh = test_app(&ts, TestClock::new(now)).await;
+        let report = fresh.retention_sweep(&ts.ctx()).await.expect("sweep");
+        assert_eq!(
+            report.audit_expired_count, 0,
+            "opt-out: nothing swept from audit"
+        );
+
+        let raw = std::fs::read_to_string(fresh.audit_log_path()).expect("audit file");
+        assert!(
+            raw.contains("\"doc_id\":\"very-old\""),
+            "old audit line preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_retention_override_can_be_longer_than_data_retention() {
+        // T-120: a tenant can keep audit lines past data expiry
+        // (e.g., 365 d audit vs 30 d data) by setting `audit_days`.
+        let ts = TempStore::new();
+        let now = chrono::Utc::now();
+        let app = test_app(&ts, TestClock::new(now)).await;
+        app.set_audit_retention_days(&ts.ctx(), Some(365))
+            .await
+            .expect("longer audit horizon");
+        assert_eq!(app.audit_retention_days(&ts.ctx()).unwrap(), 365);
+        assert_eq!(app.retention_days(&ts.ctx()).unwrap(), 30);
     }
 }
