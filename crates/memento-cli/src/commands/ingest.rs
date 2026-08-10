@@ -114,6 +114,7 @@ async fn ingest_text(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
 /// [--doc-id <uuid>]` (REQ-MC-002).
 async fn ingest_document(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     let file = PathBuf::from(m.get_one::<String>("file").expect("clap: required"));
+    let file = canonical_document_within(&app.root, &file)?;
     let source_hint = match m.get_one::<String>("source") {
         Some(raw) => parse_source(raw)?,
         None => source_hint_for(&file),
@@ -149,6 +150,26 @@ async fn ingest_document(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError
             result.chunk_ids.len()
         );
         Ok(())
+    }
+}
+
+fn canonical_document_within(root: &Path, entry: &Path) -> Result<PathBuf, DomainError> {
+    if entry
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(DomainError::InvalidInput {
+            message: format!("path resolves outside storage root: {}", entry.display()),
+        });
+    }
+    let canonical_root = root.canonicalize().map_err(DomainError::from)?;
+    let canonical = entry.canonicalize().map_err(DomainError::from)?;
+    if canonical.starts_with(&canonical_root) {
+        Ok(canonical)
+    } else {
+        Err(DomainError::InvalidInput {
+            message: format!("path resolves outside storage root: {}", entry.display()),
+        })
     }
 }
 

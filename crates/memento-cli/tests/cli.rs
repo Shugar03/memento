@@ -69,6 +69,59 @@ fn ingest_text(root: &Path, token: &str, text: &str) -> Value {
     json_of(&out)
 }
 
+fn single_document_error(out: &std::process::Output) -> Value {
+    assert_eq!(out.status.code(), Some(2));
+    serde_json::from_slice(&out.stderr).expect("structured JSON error on stderr")
+}
+
+#[test]
+fn ingest_document_rejects_dotdot_path() {
+    let (dir, token) = provisioned();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    let file = dir.path().join("inside.txt");
+    std::fs::write(&file, "inside").expect("document");
+    let traversal = nested.join("..").join("inside.txt");
+
+    let out = authed(dir.path(), &token)
+        .args(["--json", "ingest", "document", "--source", "text"])
+        .arg(&traversal)
+        .output()
+        .expect("run document ingest");
+    let error = single_document_error(&out);
+    assert_eq!(error["code"], "INVALID_INPUT");
+    assert_eq!(error["message"], "Entrada no válida.");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap()
+            .contains("path resolves outside storage root")
+    );
+}
+
+#[test]
+fn ingest_document_rejects_path_outside_storage_root() {
+    let (dir, token) = provisioned();
+    let outside = tempfile::tempdir().expect("outside directory");
+    let file = outside.path().join("outside.txt");
+    std::fs::write(&file, "outside").expect("document");
+
+    let out = authed(dir.path(), &token)
+        .args(["--json", "ingest", "document", "--source", "text"])
+        .arg(&file)
+        .output()
+        .expect("run document ingest");
+    let error = single_document_error(&out);
+    assert_eq!(error["code"], "INVALID_INPUT");
+    assert_eq!(error["message"], "Entrada no válida.");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap()
+            .contains("path resolves outside storage root")
+    );
+}
+
 // ---- REQ-CL-005: exit-code contract -----------------------------------------
 
 #[test]
