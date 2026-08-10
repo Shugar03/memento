@@ -53,7 +53,12 @@ datafusion-common = "54.1"
 # need OpenSSL there). We use `ort-load-dynamic` (onnxruntime loaded at runtime — see
 # docs/dependencies.md) and `hf-hub-rustls-tls` (pure-Rust TLS). See docs/dependencies.md.
 fastembed = { version = "5.17", default-features = false, features = ["ort-load-dynamic", "hf-hub-rustls-tls"] }
-text-splitter = { version = "0.32", features = ["tokenizers"] }
+# text-splitter: the `tokenizers` feature dropped — its upstream feature drags
+# tokenizers 0.23 + onig into the tree while fastembed 5.x pins ^0.22, and the
+# upstream ChunkSizer impl targets its own 0.23 copy. memento-parse implements
+# ChunkSizer for a local wrapper over the workspace tokenizers 0.22 pin instead
+# (single tokenizers copy; see docs/dependencies.md deviations).
+text-splitter = "0.32"
 # fastembed 5.x pins tokenizers to ^0.22.x; aligning the workspace pin avoids a duplicate build.
 tokenizers = "0.22"
 # --- code knowledge (git pin; repo jyjeanne/okf-rs, package okf-core; see docs/dependencies.md) ---

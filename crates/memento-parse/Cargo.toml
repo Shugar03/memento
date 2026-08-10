@@ -6,12 +6,24 @@ license.workspace = true
 description = "Memento RS document parsing (anydoc subprocess + fallback) and deterministic chunking."
 
 [dependencies]
-anyhow.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
+memento-domain = { path = "../memento-domain" }
+memento-ports = { path = "../memento-ports" }
+async-trait.workspace = true
 text-splitter.workspace = true
 tokenizers.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+memento-testkit = { path = "../memento-testkit" }
+
+# Dev-only test double for the anydoc CLI (T-031): integration tests locate
+# it via env!("CARGO_BIN_EXE_memento_parse_fake_anydoc"). Never shipped.
+[[bin]]
+name = "memento-parse-fake-anydoc"
+path = "src/bin/fake_anydoc.rs"
+
