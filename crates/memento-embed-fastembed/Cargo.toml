@@ -7,6 +7,11 @@ description = "Memento RS embedding adapter over fastembed (MultilingualE5Small,
 
 [dependencies]
 fastembed.workspace = true
+memento-domain = { path = "../memento-domain" }
+memento-ports = { path = "../memento-ports" }
+async-trait.workspace = true
+tokio.workspace = true
 tracing.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
+
+[dev-dependencies]
+memento-testkit = { path = "../memento-testkit" }
