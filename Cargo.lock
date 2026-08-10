@@ -2060,6 +2060,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dissimilar"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeda16ab4059c5fd2a83f2b9c9e9c981327b18aa8e3b313f7e6563799d4f093e"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2153,6 +2159,16 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "expect-test"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63af43ff4431e848fb47472a920f14fa71c24de13255a5692e93d4e90302acb0"
+dependencies = [
+ "dissimilar",
+ "once_cell",
 ]
 
 [[package]]
@@ -4065,7 +4081,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "thiserror",
+ "tokio",
  "uuid",
 ]
 
@@ -4082,6 +4100,12 @@ dependencies = [
 [[package]]
 name = "memento-i18n"
 version = "0.1.0"
+dependencies = [
+ "expect-test",
+ "memento-domain",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "memento-lancedb"
@@ -4141,7 +4165,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "memento-domain",
  "serde",
+ "serde_json",
  "uuid",
 ]
 
