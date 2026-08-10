@@ -26,9 +26,22 @@ pub struct TenantContext {
 }
 
 impl TenantContext {
-    /// Internal constructor: only domain-internal code (in practice, the
-    /// tenant resolver) may create a context (REQ-TA-002/005).
-    /// Dead-code allowed until memento-tenant (batch 6) consumes it.
+    /// Resolver constructor: enabled ONLY when the `tenant-resolver` feature
+    /// is on. memento-tenant is the sole crate that enables it, so contexts
+    /// are still fabricable only by the tenant resolver (REQ-TA-002/005).
+    #[cfg(feature = "tenant-resolver")]
+    pub fn new(tenant_id: TenantId, workspace_id: WorkspaceId, agent_id: AgentId) -> Self {
+        Self {
+            tenant_id,
+            workspace_id,
+            agent_id,
+        }
+    }
+
+    /// Crate-private constructor for default builds (no `tenant-resolver`
+    /// feature): no crate outside memento-domain can fabricate a context.
+    /// Dead-code allowed until a feature build consumes it.
+    #[cfg(not(feature = "tenant-resolver"))]
     #[allow(dead_code)]
     pub(crate) fn new(tenant_id: TenantId, workspace_id: WorkspaceId, agent_id: AgentId) -> Self {
         Self {
