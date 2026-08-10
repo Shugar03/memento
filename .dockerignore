@@ -1,0 +1,27 @@
+# Docker build exclusions (T-105 in batch 11).
+#
+# Keep the build context small: target/ alone is hundreds of GB on
+# cold rebuilds with the ort + lancedb stack (line-tables-only helps
+# but cannot shrink transitive deps). `.git/` is irrelevant for builds;
+# `.atl/` and `.opencode/` are session-local state.
+
+# Build artifacts
+target/
+**/target/
+
+# VCS
+.git/
+.gitignore
+
+# Tooling session state
+.atl/
+.opencode/
+
+# Local docs / scratch (not needed by the binary)
+docs/
+benches/
+
+# Node / JS (the Docker image does not need anydoc at build time; the
+# host can mount Node from outside if it wants the 14 document formats)
+node_modules/
+*.node

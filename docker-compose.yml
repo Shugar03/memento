@@ -1,0 +1,97 @@
+# docker-compose — local stack for Memento RS (T-105 in batch 11).
+#
+# Three services backed by named volumes:
+#   * `mcp`     — stdio MCP server (binary `memento-mcp`).
+#   * `cli`     — one-shot CLI runner (`memento health` by default;
+#                 override `command:` to invoke any subcommand).
+#   * `worker`  — daemon that runs sweep + maintenance + backup on a
+#                 24 h timer (REQ-OP-001).
+#
+# Volumes:
+#   * `memento-db`      → /var/lib/memento/db       tenant data (LanceDB).
+#   * `memento-models`  → /var/lib/memento/models   embed-model cache.
+#   * `memento-logs`    → /var/lib/memento/logs     audit JSONL.
+#   * `memento-backups` → /var/lib/memento/backups  encrypted backups.
+#
+# Usage:
+#   docker compose up --build             # bring up mcp + worker
+#   docker compose run --rm cli           # one-shot `memento health`
+#   docker compose run --rm cli memento memory search --query "..."
+#   docker compose logs -f mcp            # tail the MCP service
+#
+# Env required for the MCP server / CLI / worker (REQ-TA-002/003):
+#   MEMENTO_TOKEN    — bearer token for the tenant (printed once on
+#                      `memento tenant create`).
+#   MEMENTO_AGENT_ID — agent identity, audited on every action.
+# The worker does NOT require a token (operational identity).
+#
+# On a clean host the first run downloads `MultilingualE5Small`
+# (~500 MB) into the `memento-models` volume — see README / install doc
+# for `--no-embeddings` as a no-download fallback.
+
+services:
+  mcp:
+    build: .
+    image: memento-rs:local
+    container_name: memento-mcp
+    command: ["memento-mcp"]
+    environment:
+      MEMENTO_ROOT: "/var/lib/memento"
+      MEMENTO_TOKEN: "${MEMENTO_TOKEN:?set MEMENTO_TOKEN to the tenant bearer}"
+      MEMENTO_AGENT_ID: "${MEMENTO_AGENT_ID:-mcp}"
+      MEMENTO_LOCALE: "${MEMENTO_LOCALE:-es}"
+    volumes:
+      - memento-db:/var/lib/memento/db
+      - memento-models:/var/lib/memento/models
+      - memento-logs:/var/lib/memento/logs
+      - memento-backups:/var/lib/memento/backups
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    # The MCP server speaks stdio; do NOT expose ports. Clients connect
+    # via `docker compose run --rm mcp` or attach from the host with
+    # `docker exec`.
+
+  cli:
+    build: .
+    image: memento-rs:local
+    container_name: memento-cli
+    command: ["memento", "health"]
+    environment:
+      MEMENTO_ROOT: "/var/lib/memento"
+      MEMENTO_TOKEN: "${MEMENTO_TOKEN:?set MEMENTO_TOKEN to the tenant bearer}"
+      MEMENTO_AGENT_ID: "${MEMENTO_AGENT_ID:-cli}"
+      MEMENTO_LOCALE: "${MEMENTO_LOCALE:-es}"
+    volumes:
+      - memento-db:/var/lib/memento/db
+      - memento-models:/var/lib/memento/models
+      - memento-logs:/var/lib/memento/logs
+      - memento-backups:/var/lib/memento/backups
+    # One-shot by default (`memento health`). Pass a subcommand via:
+    #   docker compose run --rm cli memento memory search --query "..."
+    entrypoint: ["/usr/bin/tini", "--"]
+    restart: "no"
+
+  worker:
+    build: .
+    image: memento-rs:local
+    container_name: memento-worker
+    command: ["memento-worker"]
+    environment:
+      MEMENTO_ROOT: "/var/lib/memento"
+      MEMENTO_INTERVAL_HOURS: "${MEMENTO_INTERVAL_HOURS:-24}"
+    volumes:
+      - memento-db:/var/lib/memento/db
+      - memento-logs:/var/lib/memento/logs
+      - memento-backups:/var/lib/memento/backups
+    restart: unless-stopped
+
+volumes:
+  memento-db:
+    name: memento-db
+  memento-models:
+    name: memento-models
+  memento-logs:
+    name: memento-logs
+  memento-backups:
+    name: memento-backups
