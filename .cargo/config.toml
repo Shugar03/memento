@@ -1,0 +1,11 @@
+# Host build constraints (w64devkit/windows-gnu; see docs/dependencies.md).
+#
+# `debug = "line-tables-only"` for every package: fully-debugged test
+# binaries on this stack exceed the Windows PE image-size limit (2 GiB) and
+# the loader refuses them with `os error 193` ("%1 is not a valid Win32
+# application"). Line tables keep `file:line` in panic backtraces while
+# shrinking dev/test binaries by roughly 2-3x. The `release` profile is
+# untouched. CI (ubuntu) is unaffected in correctness — it just builds
+# slimmer dev binaries too.
+[profile.dev.package."*"]
+debug = "line-tables-only"

@@ -70,6 +70,12 @@ okf-generator = { git = "https://github.com/jyjeanne/okf-rs", rev = "42842becafa
 argon2 = "0.5"
 rand = "0.10"
 sha2 = "0.11"
+# AES-256-GCM for per-backup encryption (design D4: per-backup key wrapped by
+# the tenant master key; crypto-shredding on erase).
+aes-gcm = "0.10"
+# Backup payload + export archives (plain tar for backups, tar.gz for export).
+tar = "0.4"
+flate2 = "1.1"
 # rand_core 0.6 with getrandom: OsRng for Argon2id salt + base62 secret
 # generation (password-hash 0.5's rand_core re-export leaves the getrandom
 # feature off; enabling it on the same 0.6.x copy unifies features).

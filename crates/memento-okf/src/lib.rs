@@ -69,6 +69,11 @@ pub struct OkfIndex {
 }
 
 impl OkfIndex {
+    /// The tenant this adapter is bound to (REQ-TA-001/002).
+    pub fn tenant_id(&self) -> &TenantId {
+        &self.tenant_id
+    }
+
     /// Open the adapter bound to `ctx`'s tenant under `root` (D8 layout).
     pub async fn open(
         ctx: &TenantContext,

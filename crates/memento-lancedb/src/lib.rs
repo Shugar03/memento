@@ -6,6 +6,8 @@
 //! bootstrap, [`vector`] for batch insert + ANN search, [`fts`] for BM25
 //! search, and [`maintenance`] for the delete→compact→prune purge chain.
 
+pub mod docs;
+pub mod feedback;
 pub mod fts;
 pub mod maintenance;
 pub mod schema;
@@ -13,6 +15,8 @@ pub mod store;
 pub mod symbols;
 pub mod vector;
 
+pub use docs::{DocRecord, all_docs, chunk_ids_by_doc, find_doc, find_doc_by_hash, upsert_doc};
+pub use feedback::{FeedbackRecord, add_feedback, all_feedback, feedback_for_chunk};
 pub use fts::{MAX_TOP_K, ensure_fts_index, full_text_search};
 pub use maintenance::{
     VersionSummary, compact, delete_chunks, delete_doc, delete_tenant, delete_workspace, erase,
@@ -168,4 +172,31 @@ pub fn rrf_fuse(
     let mut out: Vec<(ChunkId, f32)> = scores.into_iter().collect();
     out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     out
+}
+
+/// All chunks of the bound tenant, in insertion order (export artifact,
+/// REQ-CG-005; retention forensics).
+pub async fn all_chunks(
+    store: &LanceStore,
+    ctx: &TenantContext,
+) -> Result<Vec<MemoryChunk>, DomainError> {
+    store.ensure_tenant(ctx)?;
+    let table = store.table(schema::CHUNKS).await?;
+    let stream = table
+        .query()
+        .only_if_expr(schema::tenant_scope(ctx.tenant_id()))
+        .execute()
+        .await
+        .map_err(|err| store::map_error("all_chunks", err))?;
+    let batches: Vec<RecordBatch> = stream
+        .try_collect()
+        .await
+        .map_err(|err| store::map_error("all_chunks", err))?;
+    let mut chunks = Vec::new();
+    for batch in &batches {
+        for row in 0..batch.num_rows() {
+            chunks.push(store::row_to_chunk(batch, row)?);
+        }
+    }
+    Ok(chunks)
 }
