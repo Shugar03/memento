@@ -9,6 +9,9 @@
 
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use memento_domain::DomainError;
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -18,7 +21,22 @@ pub const MODEL_VERSION: &str = "multilingual-e5-base-v0.0.3";
 /// Embedding dimension (must match the lancedb chunks schema).
 pub const EMBEDDING_DIM: usize = 768;
 /// Texts per inference batch (fastembed internal batching, T-024 boundary).
-pub const MAX_BATCH: usize = 64;
+pub const MAX_BATCH: usize = 8;
+/// Max tokens fed to the model per text. Chunks are 256-300 tokens, so the
+/// fastembed default (512) wastes ~40% of compute on padding/truncation.
+pub const MAX_EMBED_LEN: usize = 320;
+/// Max entries in the embed cache (hash→vector). Beyond this we clear to
+/// bound memory; re-ingest/dedup workloads stay small in practice.
+pub const MAX_CACHE_ENTRIES: usize = 100_000;
+
+/// Fast content hash for the embed cache. DefaultHasher (SipHash) is
+/// deterministic within a process run — exactly what the per-process cache
+/// needs; no new dependency.
+fn hash_text(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// The embedding computation behind the loader (injectable for tests).
 pub trait EmbeddingBackend: Send + Sync {
@@ -47,7 +65,8 @@ impl FastEmbedBackend {
         crate::dylib::ensure_loaded();
         let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Base)
             .with_cache_dir(cache_dir)
-            .with_show_download_progress(false);
+            .with_show_download_progress(false)
+            .with_max_length(MAX_EMBED_LEN);
         let model =
             TextEmbedding::try_new(options).map_err(|err| DomainError::EmbeddingFailed {
                 message: format!("init fastembed: {err}"),
@@ -94,6 +113,9 @@ pub struct ModelLoader {
     init_lock: Mutex<()>,
     /// Cached initialization failure message (replayed, not retried).
     init_error: Mutex<Option<String>>,
+    /// Embedding cache by text hash: skips repeated inference when the same
+    /// text is re-embedded (re-ingest, dedup) — zero compute for cache hits.
+    cache: Mutex<HashMap<u64, Vec<f32>>>,
 }
 
 impl ModelLoader {
@@ -112,6 +134,7 @@ impl ModelLoader {
             backend: OnceLock::new(),
             init_lock: Mutex::new(()),
             init_error: Mutex::new(None),
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -126,6 +149,7 @@ impl ModelLoader {
             backend: OnceLock::from(backend),
             init_lock: Mutex::new(()),
             init_error: Mutex::new(None),
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -192,7 +216,47 @@ impl ModelLoader {
             return Ok(None);
         }
         let backend = self.backend()?;
-        Ok(Some(backend.embed_batch(texts)?))
+
+        // Cache hit path: identical text → identical vector (deterministic
+        // embedder). Avoids repeated ONNX inference on re-ingest/dedup.
+        let mut result: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let mut misses: Vec<(usize, &str)> = Vec::new();
+        {
+            let cache = self.cache.lock().map_err(|_| DomainError::Internal {
+                message: "embedding cache lock poisoned".into(),
+            })?;
+            for (idx, text) in texts.iter().enumerate() {
+                let key = hash_text(text);
+                if let Some(vec) = cache.get(&key) {
+                    result[idx] = Some(vec.clone());
+                } else {
+                    misses.push((idx, text));
+                }
+            }
+        }
+
+        if !misses.is_empty() {
+            let miss_texts: Vec<&str> = misses.iter().map(|(_, t)| *t).collect();
+            let embedded = backend.embed_batch(&miss_texts)?;
+            let mut cache = self.cache.lock().map_err(|_| DomainError::Internal {
+                message: "embedding cache lock poisoned".into(),
+            })?;
+            for ((idx, text), vec) in misses.iter().zip(embedded.iter()) {
+                let key = hash_text(text);
+                cache.insert(key, vec.clone());
+                result[*idx] = Some(vec.clone());
+            }
+            if cache.len() > MAX_CACHE_ENTRIES {
+                cache.clear();
+            }
+        }
+
+        Ok(Some(
+            result
+                .into_iter()
+                .map(|v| v.expect("every slot filled by hit or miss"))
+                .collect(),
+        ))
     }
 }
 
@@ -217,6 +281,32 @@ mod tests {
             Ok(texts
                 .iter()
                 .map(|t| memento_testkit::deterministic_embed(t, self.dim))
+                .collect())
+        }
+
+        fn model_version(&self) -> &'static str {
+            MODEL_VERSION
+        }
+    }
+
+    struct CacheProbeBackend {
+        calls: AtomicUsize,
+    }
+
+    impl CacheProbeBackend {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl EmbeddingBackend for CacheProbeBackend {
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, DomainError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(texts
+                .iter()
+                .map(|t| memento_testkit::deterministic_embed(t, EMBEDDING_DIM))
                 .collect())
         }
 
@@ -262,6 +352,7 @@ mod tests {
             backend: OnceLock::new(),
             init_lock: Mutex::new(()),
             init_error: Mutex::new(None),
+            cache: Mutex::new(HashMap::new()),
         };
 
         let a = loader.backend().expect("first init");
@@ -295,6 +386,7 @@ mod tests {
             backend: OnceLock::new(),
             init_lock: Mutex::new(()),
             init_error: Mutex::new(None),
+            cache: Mutex::new(HashMap::new()),
         });
 
         // 8 threads race on first access: exactly one initialization.
@@ -325,9 +417,37 @@ mod tests {
     }
 
     #[test]
+    fn embedding_cache_skips_duplicate_inference() {
+        let backend = Arc::new(CacheProbeBackend::new());
+        let loader =
+            ModelLoader::from_backend(PathBuf::new(), backend.clone() as Arc<dyn EmbeddingBackend>);
+
+        let out1 = loader
+            .embed(&["hola mundo", "adiós mundo"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+
+        let out2 = loader
+            .embed(&["hola mundo", "adiós mundo"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(out1, out2, "identical texts return identical vectors");
+
+        let out3 = loader
+            .embed(&["hola mundo", "texto nuevo"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(out3[0], out1[0], "cached vector reused");
+    }
+
+    #[test]
     fn model_version_contract() {
         assert_eq!(MODEL_VERSION, "multilingual-e5-base-v0.0.3");
         assert_eq!(EMBEDDING_DIM, 768);
-        assert_eq!(MAX_BATCH, 64);
+        assert_eq!(MAX_BATCH, 8);
+        assert_eq!(MAX_EMBED_LEN, 320);
     }
 }

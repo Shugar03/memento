@@ -285,7 +285,6 @@ mod tests {
         // warm-up entirely. AppService::open() must succeed and the
         // facade must still serve code.* tools in literal mode.
         let ts = TempStore::new();
-        let clock = memento_testkit::TestClock::default();
         let app = crate::test_util::test_app_no_embed(&ts).await;
         // No exception thrown, no panic, no error.
         app.warm_embedder().await.expect("warm with no embedder");

@@ -25,3 +25,20 @@ debug = "line-tables-only"
 [profile.dev]
 debug = 0
 incremental = false
+
+# ---------------------------------------------------------------------------
+# Optional local-optimized build (NOT default — see portability note).
+#
+# `target-cpu=native` cannot live in a Cargo profile: `rustflags` is a
+# `[build]`-level setting, and applying it globally would make the published
+# OSS binary non-portable (AVX-512 instructions crash on CPUs without them).
+# ONNX inference also runs inside the prebuilt `onnxruntime.dll` (C++), which
+# does its own runtime CPU dispatch — rustflags do not touch it.
+#
+# For a local benchmark build, use the environment variable instead:
+#
+#     $env:RUSTFLAGS = "-C target-cpu=native"
+#     cargo build --release
+#
+# This speeds up only the Rust-compiled parts of the workspace on THIS CPU.
+# Do NOT ship binaries built this way.

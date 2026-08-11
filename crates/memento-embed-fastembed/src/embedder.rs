@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embeds_in_batches_of_64() {
+    async fn embeds_in_batches_of_8() {
         let backend = Arc::new(RecordingBackend::new());
         let embedder = embedder_with(backend.clone());
 
@@ -152,8 +152,8 @@ mod tests {
         assert_eq!(out[0], memento_testkit::deterministic_embed("texto 0", 768));
         assert_eq!(
             backend.call_sizes(),
-            vec![64, 1],
-            "batches split at the 64 boundary"
+            vec![8, 8, 8, 8, 8, 8, 8, 8, 1],
+            "batches split at the 8 boundary"
         );
     }
 

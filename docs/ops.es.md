@@ -201,6 +201,14 @@ sale del presupuesto:
 Las desviaciones se imprimen con el valor medido; nunca se aceptan en
 silencio.
 
+## Ingestión masiva — preferí el servidor persistente
+
+Para ingestión masiva, preferí el servidor MCP persistente (`memento-mcp-server.exe`) sobre el CLI one-shot:
+
+- Cada invocación del CLI recarga el modelo ONNX (cold ~7s, warm ~3.8s) — proceso nuevo cada vez.
+- El servidor mantiene el modelo residente: paga la carga UNA vez y queda caliente.
+- Flujo recomendado: `memento-mcp-server.exe` con MEMENTO_TOKEN/MEMENTO_AGENT_ID/MEMENTO_ROOT, luego `memory.ingest_document`/`memory.ingest_text` por MCP.
+
 ## Estructura de directorios
 
 ```

@@ -198,6 +198,14 @@ falls outside the budget:
 
 Deviations are printed with the measured value; never silently accepted.
 
+## Bulk ingest — prefer the persistent server
+
+For bulk ingestion, prefer the persistent MCP server over the one-shot CLI:
+
+- Every CLI invocation reloads the ONNX model (cold ~7s, warm ~3.8s) — a new process each time.
+- The server keeps the model resident: pays the load ONCE and stays warm.
+- Recommended flow: `memento-mcp-server.exe` with MEMENTO_TOKEN/MEMENTO_AGENT_ID/MEMENTO_ROOT, then `memory.ingest_document`/`memory.ingest_text` over MCP.
+
 ## Directory layout
 
 ```
