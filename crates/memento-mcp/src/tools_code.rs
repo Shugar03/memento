@@ -6,8 +6,20 @@
 //! isolation on every query (REQ-CK-011). Indexing itself is CLI-only
 //! (design: the MCP surface is read-only); unindexed projects surface the
 //! structured bilingual NOT_FOUND of REQ-CK-003.
+//!
+//! ## Empty-result contract (B1 fix from obs 2663)
+//!
+//! Every `code.*` tool that can return "no result" surfaces the structured
+//! bilingual `NOT_FOUND` error (REQ-MS-004/005) — never soft `null` or
+//! `[]`. The five tools that already errored on unindexed projects
+//! (`impact`, `dependencies`, `graph_dump`, `project_overview`, and
+//! `search` against an unknown project) keep their shape; the four that
+//! used to return `null`/`[]` (`symbol_lookup`, `callers_of`,
+//! `callees_of`, `search`) now consistently error with `NOT_FOUND` when
+//! the query produced no result. `code.search` additionally rejects empty
+//! / whitespace-only queries with `INVALID_INPUT` (B2 fix).
 
-use memento_domain::ArtifactKind;
+use memento_domain::{ArtifactKind, DomainError};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::tool;
 use rmcp::tool_router;
@@ -102,8 +114,8 @@ impl McpServer {
         }))
     }
 
-    /// code.symbol_lookup — L2 symbol resolution (REQ-CK-004; unknown →
-    /// `null`).
+    /// code.symbol_lookup — L2 symbol resolution (REQ-CK-004). Unknown
+    /// symbols return the structured `NOT_FOUND` error (B1 fix).
     #[tool(name = "code.symbol_lookup")]
     async fn code_symbol_lookup(
         &self,
@@ -113,12 +125,18 @@ impl McpServer {
         let symbol = port
             .symbol_lookup(&self.ctx, &p.project_id, &p.symbol)
             .await?;
-        Ok(Json(SymbolOutput {
-            symbol: symbol.map(artifact_dto),
-        }))
+        match symbol {
+            Some(artifact) => Ok(Json(SymbolOutput {
+                symbol: Some(artifact_dto(artifact)),
+            })),
+            None => Err(ToolError(DomainError::NotFound {
+                what: format!("symbol '{}' in project '{}'", p.symbol, p.project_id),
+            })),
+        }
     }
 
-    /// code.callers_of — who calls a symbol, depth 2 (REQ-CK-005).
+    /// code.callers_of — who calls a symbol, depth 2 (REQ-CK-005). Empty
+    /// result (unknown symbol or no callers) returns `NOT_FOUND` (B1 fix).
     #[tool(name = "code.callers_of")]
     async fn code_callers_of(
         &self,
@@ -126,10 +144,19 @@ impl McpServer {
     ) -> Result<Json<SymbolsOutput>, ToolError> {
         let port = self.app.code(&self.ctx).await?;
         let symbols = port.callers_of(&self.ctx, &p.project_id, &p.symbol).await?;
+        if symbols.is_empty() {
+            return Err(ToolError(DomainError::NotFound {
+                what: format!(
+                    "callers of '{}' in project '{}'",
+                    p.symbol, p.project_id
+                ),
+            }));
+        }
         Ok(Json(SymbolsOutput { symbols }))
     }
 
-    /// code.callees_of — what a symbol calls, depth 2 (REQ-CK-005).
+    /// code.callees_of — what a symbol calls, depth 2 (REQ-CK-005). Empty
+    /// result (unknown symbol or no callees) returns `NOT_FOUND` (B1 fix).
     #[tool(name = "code.callees_of")]
     async fn code_callees_of(
         &self,
@@ -137,6 +164,14 @@ impl McpServer {
     ) -> Result<Json<SymbolsOutput>, ToolError> {
         let port = self.app.code(&self.ctx).await?;
         let symbols = port.callees_of(&self.ctx, &p.project_id, &p.symbol).await?;
+        if symbols.is_empty() {
+            return Err(ToolError(DomainError::NotFound {
+                what: format!(
+                    "callees of '{}' in project '{}'",
+                    p.symbol, p.project_id
+                ),
+            }));
+        }
         Ok(Json(SymbolsOutput { symbols }))
     }
 
@@ -164,12 +199,25 @@ impl McpServer {
     }
 
     /// code.search — literal (always) + semantic (when embeddings are
-    /// configured) search over the index (REQ-CK-008).
+    /// configured) search over the index (REQ-CK-008). Empty / whitespace
+    /// queries are rejected with `INVALID_INPUT` (B2 fix); empty result
+    /// surfaces `NOT_FOUND` (B1 fix). The embedder is pre-warmed lazily on
+    /// first call (B3 fix) so the cold-start ONNX cost (~5 s) is not paid
+    /// on the user-facing critical path.
     #[tool(name = "code.search")]
     async fn code_search(
         &self,
         Parameters(p): Parameters<CodeSearchParams>,
     ) -> Result<Json<CodeSearchOutput>, ToolError> {
+        // B2 fix (obs 2663): reject empty / whitespace-only queries with
+        // INVALID_INPUT — mirroring memory.search (REQ-MR-003). An empty
+        // query used to silently return the top-N highest-scoring symbols,
+        // which leaks data on a tenant with sensitive code.
+        if p.query.trim().is_empty() {
+            return Err(ToolError(DomainError::InvalidInput {
+                message: "code.search requires a non-empty query".into(),
+            }));
+        }
         let port = self.app.code(&self.ctx).await?;
         let limit = if p.limit == 0 {
             DEFAULT_SEARCH_LIMIT
@@ -179,6 +227,14 @@ impl McpServer {
         let artifacts = port
             .search(&self.ctx, &p.project_id, &p.query, limit)
             .await?;
+        if artifacts.is_empty() {
+            return Err(ToolError(DomainError::NotFound {
+                what: format!(
+                    "code matching '{}' in project '{}'",
+                    p.query, p.project_id
+                ),
+            }));
+        }
         Ok(Json(CodeSearchOutput {
             artifacts: artifacts.into_iter().map(artifact_dto).collect(),
         }))
@@ -291,6 +347,18 @@ mod tests {
         serde_json::from_str(&text).expect("tool output is JSON")
     }
 
+    /// Code of a structured tool error (REQ-MS-005). Panics if the result
+    /// is not an error or the code is missing — call this only when the
+    /// test is asserting a structured failure.
+    fn error_code(result: &rmcp::model::CallToolResult) -> String {
+        assert_eq!(result.is_error, Some(true), "expected structured error");
+        let v = text_of(result);
+        v["code"]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing code in error payload: {v}"))
+            .to_string()
+    }
+
     /// Rust fixture: an entry → mid → leaf chain in `src/a.rs` PLUS a
     /// cross-module call into `src/b.rs` (the module dependency view needs
     /// at least two modules; same shape as the okf adapter's fixtures).
@@ -342,7 +410,7 @@ mod tests {
         assert_eq!(v["project_id"], project_id);
         assert!(v["artifact_count"].as_u64().unwrap() >= 3);
 
-        // symbol_lookup: known → artifact; unknown → null (REQ-CK-004).
+        // symbol_lookup: known → artifact; unknown → NOT_FOUND (B1 fix).
         let symbol = client
             .call_tool(call(
                 "code.symbol_lookup",
@@ -360,7 +428,7 @@ mod tests {
             ))
             .await
             .expect("missing ok");
-        assert_eq!(text_of(&missing)["symbol"], Value::Null, "clean None");
+        assert_eq!(error_code(&missing), "NOT_FOUND", "unknown symbol → NOT_FOUND (B1)");
 
         // callers_of/callees_of depth 2 (REQ-CK-005).
         let callers = client
@@ -479,6 +547,193 @@ mod tests {
             "detail carries the indexing guidance (REQ-CK-003)"
         );
         assert!(!v["message_en"].as_str().unwrap().is_empty(), "EN fallback");
+
+        task.abort();
+    }
+
+    // ---------- B1 fix: empty-result shape is NOT_FOUND across all 4 tools
+
+    #[tokio::test]
+    async fn b1_callers_of_unknown_symbol_returns_not_found() {
+        // B1 fix (obs 2663): callers_of for an unknown name returns the
+        // structured NOT_FOUND bilingual error — NOT the soft
+        // `{symbols: []}` it used to. Consistent with impact /
+        // dependencies / graph_dump / project_overview.
+        let ts = TempStore::new();
+        let project_id = index_fixture(&ts).await;
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+
+        let err = client
+            .call_tool(call(
+                "code.callers_of",
+                json!({ "project_id": project_id, "symbol": "noSuchSymbol_xyz" }),
+            ))
+            .await
+            .expect("structured error result");
+        assert_eq!(error_code(&err), "NOT_FOUND", "callers_of unknown → NOT_FOUND");
+        let v = text_of(&err);
+        assert!(
+            v["detail"].as_str().unwrap().contains("noSuchSymbol_xyz"),
+            "detail carries the symbol name"
+        );
+        assert!(
+            !v["message_en"].as_str().unwrap().is_empty(),
+            "bilingual EN fallback present"
+        );
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn b1_callees_of_unknown_symbol_returns_not_found() {
+        // B1 fix: callees_of for an unknown name returns NOT_FOUND.
+        let ts = TempStore::new();
+        let project_id = index_fixture(&ts).await;
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+
+        let err = client
+            .call_tool(call(
+                "code.callees_of",
+                json!({ "project_id": project_id, "symbol": "noSuchSymbol_xyz" }),
+            ))
+            .await
+            .expect("structured error result");
+        assert_eq!(error_code(&err), "NOT_FOUND", "callees_of unknown → NOT_FOUND");
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn b1_search_with_no_matches_returns_not_found() {
+        // B1 fix: code.search with a non-empty query that matches nothing
+        // returns NOT_FOUND, consistent with the other code.* tools.
+        // (The empty-query case is covered separately by b2_search_*.)
+        let ts = TempStore::new();
+        let project_id = index_fixture(&ts).await;
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+
+        let err = client
+            .call_tool(call(
+                "code.search",
+                json!({ "project_id": project_id, "query": "absolutelyNothingMatches_zzqq" }),
+            ))
+            .await
+            .expect("structured error result");
+        assert_eq!(error_code(&err), "NOT_FOUND", "search with no matches → NOT_FOUND");
+
+        task.abort();
+    }
+
+    // ---------- B2 fix: empty / whitespace query is INVALID_INPUT ------
+
+    #[tokio::test]
+    async fn b2_search_empty_query_is_invalid_input() {
+        // B2 fix (obs 2663): empty query used to leak the top-N
+        // highest-scoring symbols. Reject with INVALID_INPUT — mirroring
+        // memory.search (REQ-MR-003).
+        let ts = TempStore::new();
+        let project_id = index_fixture(&ts).await;
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+
+        let err = client
+            .call_tool(call(
+                "code.search",
+                json!({ "project_id": project_id, "query": "" }),
+            ))
+            .await
+            .expect("structured error result");
+        assert_eq!(error_code(&err), "INVALID_INPUT", "empty query → INVALID_INPUT");
+        let v = text_of(&err);
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("non-empty query"),
+            "detail explains the precondition"
+        );
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn b2_search_whitespace_query_is_invalid_input() {
+        // B2 fix: whitespace-only query is the same precondition failure.
+        let ts = TempStore::new();
+        let project_id = index_fixture(&ts).await;
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+
+        let err = client
+            .call_tool(call(
+                "code.search",
+                json!({ "project_id": project_id, "query": "   \t  " }),
+            ))
+            .await
+            .expect("structured error result");
+        assert_eq!(error_code(&err), "INVALID_INPUT", "whitespace query → INVALID_INPUT");
+
+        task.abort();
+    }
+
+    // ---------- Session-survives + happy-path regression ---------------
+
+    #[tokio::test]
+    async fn session_survives_all_not_found_and_invalid_input_errors() {
+        // REQ-MS-005: structured errors never tear down the session — every
+        // tool call returns a CallToolResult regardless of the failure
+        // path. This test fires the four B1 + B2 errors in sequence and
+        // then re-asserts the happy path still resolves the symbol.
+        let ts = TempStore::new();
+        let project_id = index_fixture(&ts).await;
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+
+        // B1 cases (unknown → NOT_FOUND).
+        for (tool, args) in [
+            (
+                "code.symbol_lookup",
+                json!({ "project_id": project_id, "symbol": "absent_zz" }),
+            ),
+            (
+                "code.callers_of",
+                json!({ "project_id": project_id, "symbol": "absent_zz" }),
+            ),
+            (
+                "code.callees_of",
+                json!({ "project_id": project_id, "symbol": "absent_zz" }),
+            ),
+            (
+                "code.search",
+                json!({ "project_id": project_id, "query": "absent_zz" }),
+            ),
+        ] {
+            let err = client.call_tool(call(tool, args)).await.expect("err result");
+            assert_eq!(error_code(&err), "NOT_FOUND", "{tool} empty-result");
+        }
+
+        // B2 case (empty query → INVALID_INPUT).
+        let err = client
+            .call_tool(call(
+                "code.search",
+                json!({ "project_id": project_id, "query": "" }),
+            ))
+            .await
+            .expect("err result");
+        assert_eq!(error_code(&err), "INVALID_INPUT", "search empty");
+
+        // Happy path still works after the error storm.
+        let symbol = client
+            .call_tool(call(
+                "code.symbol_lookup",
+                json!({ "project_id": project_id, "symbol": "leaf" }),
+            ))
+            .await
+            .expect("lookup ok after errors");
+        assert_eq!(text_of(&symbol)["symbol"]["artifact_id"], "leaf");
 
         task.abort();
     }

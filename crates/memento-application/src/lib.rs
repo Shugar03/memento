@@ -60,6 +60,7 @@ use memento_parse::chunk::Chunker;
 use memento_ports::{EmbedPort, KnowledgePort, ParsePort};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Embedding model version stamped on every chunk (REQ-MC-004). Mirrors
@@ -106,6 +107,10 @@ pub struct AppService {
     /// Lazily-opened code facade (T-067): one `KnowledgePort` per bound
     /// tenant, created on first use.
     code: Mutex<Option<Arc<dyn KnowledgePort>>>,
+    /// One-shot flag (B3 fix from obs 2663): the embedder has been warmed.
+    /// `AppService::open` does the eager warm-up so the first user-facing
+    /// `code.search` call is fast (the ONNX cold-start used to cost ~5 s).
+    embed_warm: AtomicBool,
 }
 
 impl std::fmt::Debug for AppService {
@@ -140,7 +145,7 @@ impl AppService {
         store.ensure_schema().await?;
         let chunker = Chunker::embedded()?;
         let audit = AuditLogger::new(&root, ctx.tenant_id())?;
-        Ok(Self {
+        let service = Self {
             store: Arc::new(store),
             parse,
             embedder,
@@ -149,7 +154,40 @@ impl AppService {
             audit,
             root,
             code: Mutex::new(None),
-        })
+            embed_warm: AtomicBool::new(false),
+        };
+        // B3 fix (obs 2663): pre-warm the embedder at tenant open so the
+        // first user-facing `code.search` does NOT pay the ~5 s ONNX cold
+        // start. Idempotent on every process (AtomicBool absorbs re-entry).
+        // Under `--no-embeddings` (embedder is None) this is a no-op.
+        // A warmup failure (broken model, missing file) is logged but does
+        // NOT fail service open: the first user call will see the embedder
+        // error with the same surface. This preserves REQ-MC-007's
+        // structured-error invariant for ingest with a broken embedder.
+        if let Err(err) = service.warm_embedder().await {
+            tracing::warn!(?err, "embedder pre-warm failed; first call will pay the cold-start cost");
+        }
+        Ok(service)
+    }
+
+    /// Pre-warm the embedder (B3 fix from obs 2663).
+    ///
+    /// The first `embed()` call on a fresh process pays ~5 s to load the
+    /// E5Base model, the ONNX runtime, and the tokenizer. Running one
+    /// no-op embedding here moves that cost off the user-facing critical
+    /// path. Idempotent and cheap on subsequent calls (AtomicBool fast
+    /// path). On a broken embedder the error propagates so callers can
+    /// surface it; `AppService::open` logs-and-continues so the service
+    /// stays open for non-embedding flows (REQ-MC-007 invariant).
+    pub async fn warm_embedder(&self) -> Result<(), DomainError> {
+        if self.embed_warm.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(embedder) = &self.embedder {
+            embedder.embed(&[""]).await?;
+        }
+        self.embed_warm.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// The storage root this service is bound to.

@@ -215,4 +215,79 @@ mod tests {
         // Same Arc back — one adapter per bound tenant.
         assert!(std::sync::Arc::ptr_eq(&a, &b), "cached facade");
     }
+
+    // ---------- B3 fix: embedder pre-warmed at tenant open --------------
+
+    #[tokio::test]
+    async fn b3_warm_embedder_runs_exactly_once_on_open() {
+        // B3 fix (obs 2663): the first code.search call used to pay ~5 s
+        // of ONNX cold-start. AppService::open() now eagerly warms the
+        // embedder so the first user-facing search is fast. The warmup
+        // runs EXACTLY ONCE per service — re-opening or re-warming must
+        // not re-invoke the embedder.
+        use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
+        use std::sync::Arc;
+
+        struct CountingEmbed {
+            warm_calls: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl memento_ports::EmbedPort for CountingEmbed {
+            async fn embed(
+                &self,
+                texts: &[&str],
+            ) -> Result<Vec<Vec<f32>>, memento_domain::DomainError> {
+                // The warm-up call passes a single empty string. Real
+                // search calls pass the user query.
+                if texts.len() == 1 && texts[0].is_empty() {
+                    self.warm_calls.fetch_add(1, AOrd::SeqCst);
+                }
+                Ok(texts
+                    .iter()
+                    .map(|t| memento_testkit::deterministic_embed(t, 768))
+                    .collect())
+            }
+        }
+
+        let embed = Arc::new(CountingEmbed {
+            warm_calls: AtomicUsize::new(0),
+        });
+        let ts = TempStore::new();
+        let clock = memento_testkit::TestClock::default();
+        let app = crate::AppService::open(
+            &ts.ctx(),
+            ts.root(),
+            crate::test_util::real_fallback_parse(),
+            Some(embed.clone() as Arc<dyn memento_ports::EmbedPort>),
+            Arc::new(clock),
+        )
+        .await
+        .expect("test app opens");
+        assert_eq!(
+            embed.warm_calls.load(AOrd::SeqCst),
+            1,
+            "AppService::open warms the embedder exactly once"
+        );
+
+        // Re-warming must not re-invoke.
+        app.warm_embedder().await.expect("warm is idempotent");
+        app.warm_embedder().await.expect("warm is idempotent");
+        assert_eq!(
+            embed.warm_calls.load(AOrd::SeqCst),
+            1,
+            "subsequent warm-up calls are no-ops"
+        );
+    }
+
+    #[tokio::test]
+    async fn b3_open_without_embedder_succeeds_and_warm_is_a_noop() {
+        // B3 fix: --no-embeddings mode (embedder is None) skips the
+        // warm-up entirely. AppService::open() must succeed and the
+        // facade must still serve code.* tools in literal mode.
+        let ts = TempStore::new();
+        let clock = memento_testkit::TestClock::default();
+        let app = crate::test_util::test_app_no_embed(&ts).await;
+        // No exception thrown, no panic, no error.
+        app.warm_embedder().await.expect("warm with no embedder");
+    }
 }

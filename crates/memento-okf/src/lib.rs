@@ -394,6 +394,9 @@ impl KnowledgePort for OkfIndex {
     /// configured AND the index carries a sidecar; literal otherwise
     /// (works under `--no-embeddings`). Embedding failure degrades to
     /// literal — search never errors on the semantic path.
+    ///
+    /// The embedder is pre-warmed by `AppService::open` (B3 fix from obs
+    /// 2663) so this method does NOT pay the ONNX cold-start cost itself.
     async fn search(
         &self,
         ctx: &TenantContext,
