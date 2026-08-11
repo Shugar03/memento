@@ -89,7 +89,21 @@ fn create(m: &ArgMatches, root: &Path, i18n: &I18n) -> Result<(), DomainError> {
 /// immediately (restart required, risk R9 — documented).
 async fn rotate(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     let store = CredentialStore::new(&app.root);
-    let key = store.rotate(app.ctx.tenant_id())?;
+    // Route through `memento_tenant::rotate::rotate_token` (not
+    // `store.rotate` directly) so the single rotation trace stays the one
+    // pinned by `rotate.rs::rotation_trace_is_static`.
+    let key = memento_tenant::rotate_token(&store, app.ctx.tenant_id())?;
+
+    // Audit the credential change (REQ-CG-003 `rotate_token` row of the
+    // audit matrix in docs/security/threat-model.md; non-repudiation
+    // control TB-2). Target carries the timestamp ONLY — never the old or
+    // the new token material (REQ-TA-006).
+    memento_application::audit::AuditLogger::new(&app.root, app.ctx.tenant_id())?.ok(
+        &app.ctx,
+        "rotate_token",
+        json!({ "revoked_at": chrono::Utc::now() }),
+        None,
+    );
 
     if is_json(m) {
         emit_json(&json!({

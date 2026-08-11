@@ -21,6 +21,7 @@ memento-okf = { path = "../memento-okf" }
 # stats/code-status inspection reads adapter counters directly (REQ-CL-006).
 memento-lancedb = { path = "../memento-lancedb" }
 clap.workspace = true
+chrono.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
