@@ -7,17 +7,37 @@
 //! embeddings are disabled the loader returns `Ok(None)` — explicit absent
 //! vectors (REQ-MC-004) — instead of failing.
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use fastembed::{
+    EmbeddingModel, InitOptionsUserDefined, Pooling, TextEmbedding, TextInitOptions,
+    TokenizerFiles, UserDefinedEmbeddingModel,
+};
 use memento_domain::DomainError;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Model version stamped on every chunk (REQ-MC-006) and checked on
 /// retrieval (EMBEDDING_MODEL_MISMATCH surface).
 pub const MODEL_VERSION: &str = "multilingual-e5-base-v0.0.3";
+/// Version label when the int8-quantized user-defined model is active.
+pub const MODEL_VERSION_QUANTIZED: &str = "multilingual-e5-base-int8-v0.0.3";
+/// Env var pointing at the int8-quantized `model.onnx` (P2 quantize). When
+/// set, the loader uses `TextEmbedding::try_new_from_user_defined` with the
+/// tokenizer files sitting next to the onnx; when unset, the stock
+/// `MultilingualE5Base` download is used (unchanged behavior).
+const QUANTIZED_MODEL_ENV: &str = "MEMENTO_QUANTIZED_MODEL";
+
+/// The version label for the active model mode (env toggle aware). Called at
+/// loader construction so label and backend stay consistent.
+fn active_model_version() -> &'static str {
+    if std::env::var_os(QUANTIZED_MODEL_ENV).is_some() {
+        MODEL_VERSION_QUANTIZED
+    } else {
+        MODEL_VERSION
+    }
+}
 /// Embedding dimension (must match the lancedb chunks schema).
 pub const EMBEDDING_DIM: usize = 768;
 /// Texts per inference batch (fastembed internal batching, T-024 boundary).
@@ -50,12 +70,19 @@ pub trait EmbeddingBackend: Send + Sync {
 /// `&mut self`; the adapter is shared across tasks).
 pub struct FastEmbedBackend {
     model: Mutex<TextEmbedding>,
+    model_version: &'static str,
 }
 
 impl FastEmbedBackend {
     /// Initialize the ONNX session. Model files are cached under `cache_dir`
     /// (design D8: `models/`); the first call downloads them (documented,
     /// avoidable with `--no-embeddings` — REQ-CG-004).
+    ///
+    /// When `MEMENTO_QUANTIZED_MODEL` is set, the int8-quantized user-defined
+    /// model is used instead (P2): the onnx + tokenizer files are read from
+    /// disk and committed from memory. The tokenizer files must sit next to
+    /// the onnx file (same directory). Dim and graph I/O are identical to the
+    /// stock `MultilingualE5Base`; only the weights are int8.
     pub fn try_new(cache_dir: PathBuf) -> Result<Self, DomainError> {
         // Pre-load the vendored ONNX Runtime dylib before any fastembed
         // call reaches the ort C ABI. See `dylib.rs` for the full
@@ -63,6 +90,14 @@ impl FastEmbedBackend {
         // which is compiled against the 1.28 API). Idempotent: the
         // internal `OnceLock` absorbs concurrent first-callers.
         crate::dylib::ensure_loaded();
+        if let Some(model_path) = std::env::var_os(QUANTIZED_MODEL_ENV) {
+            let model_path = PathBuf::from(model_path);
+            let model = Self::try_new_user_defined(&model_path)?;
+            return Ok(Self {
+                model: Mutex::new(model),
+                model_version: MODEL_VERSION_QUANTIZED,
+            });
+        }
         let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Base)
             .with_cache_dir(cache_dir)
             .with_show_download_progress(false)
@@ -73,6 +108,44 @@ impl FastEmbedBackend {
             })?;
         Ok(Self {
             model: Mutex::new(model),
+            model_version: MODEL_VERSION,
+        })
+    }
+
+    /// Build a fastembed session from a user-defined (int8-quantized) ONNX
+    /// plus the matching tokenizer files. Uses Mean pooling — the E5 family's
+    /// pooling — and caps the tokenizer at [`MAX_EMBED_LEN`] so chunk sizing
+    /// behavior matches the stock model (A-package).
+    fn try_new_user_defined(model_path: &Path) -> Result<TextEmbedding, DomainError> {
+        let model_dir = model_path
+            .parent()
+            .ok_or_else(|| DomainError::EmbeddingFailed {
+                message: format!(
+                    "MEMENTO_QUANTIZED_MODEL has no parent dir: {}",
+                    model_path.display()
+                ),
+            })?;
+        let read_bytes = |name: &str| -> Result<Vec<u8>, DomainError> {
+            std::fs::read(model_dir.join(name)).map_err(|err| DomainError::EmbeddingFailed {
+                message: format!("read {name} for user-defined model: {err}"),
+            })
+        };
+        let onnx_file = std::fs::read(model_path).map_err(|err| DomainError::EmbeddingFailed {
+            message: format!("read quantized onnx {}: {err}", model_path.display()),
+        })?;
+        let tokenizer_files = TokenizerFiles {
+            tokenizer_file: read_bytes("tokenizer.json")?,
+            config_file: read_bytes("config.json")?,
+            special_tokens_map_file: read_bytes("special_tokens_map.json")?,
+            tokenizer_config_file: read_bytes("tokenizer_config.json")?,
+        };
+        let user_model =
+            UserDefinedEmbeddingModel::new(onnx_file, tokenizer_files).with_pooling(Pooling::Mean);
+        let options = InitOptionsUserDefined::new().with_max_length(MAX_EMBED_LEN);
+        TextEmbedding::try_new_from_user_defined(user_model, options).map_err(|err| {
+            DomainError::EmbeddingFailed {
+                message: format!("init fastembed user-defined: {err}"),
+            }
         })
     }
 }
@@ -90,7 +163,7 @@ impl EmbeddingBackend for FastEmbedBackend {
     }
 
     fn model_version(&self) -> &'static str {
-        MODEL_VERSION
+        self.model_version
     }
 }
 
@@ -164,8 +237,9 @@ impl ModelLoader {
     }
 
     /// The model version, when enabled (None in `--no-embeddings` mode).
+    /// Reflects the active model mode (quantized env toggle vs stock).
     pub fn model_version(&self) -> Option<&'static str> {
-        self.enabled.then_some(MODEL_VERSION)
+        self.enabled.then_some(active_model_version())
     }
 
     /// Access the backend, initializing it exactly once on first use
@@ -446,8 +520,31 @@ mod tests {
     #[test]
     fn model_version_contract() {
         assert_eq!(MODEL_VERSION, "multilingual-e5-base-v0.0.3");
+        assert_eq!(MODEL_VERSION_QUANTIZED, "multilingual-e5-base-int8-v0.0.3");
         assert_eq!(EMBEDDING_DIM, 768);
         assert_eq!(MAX_BATCH, 8);
         assert_eq!(MAX_EMBED_LEN, 320);
+    }
+
+    /// Serializes tests that mutate `MEMENTO_QUANTIZED_MODEL` (process-global
+    /// env — same pattern as the tenant resolver's `ENV_LOCK`).
+    static QUANTIZED_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn active_model_version_defaults_to_stock() {
+        let _guard = QUANTIZED_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var(QUANTIZED_MODEL_ENV);
+        }
+        assert_eq!(active_model_version(), MODEL_VERSION);
+    }
+
+    #[test]
+    fn active_model_version_switches_to_quantized_label() {
+        let _guard = QUANTIZED_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var(QUANTIZED_MODEL_ENV, "C:\\models\\int8\\model.onnx");
+        }
+        assert_eq!(active_model_version(), MODEL_VERSION_QUANTIZED);
     }
 }

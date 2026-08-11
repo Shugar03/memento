@@ -66,7 +66,15 @@ use std::sync::{Arc, Mutex};
 /// Embedding model version stamped on every chunk (REQ-MC-004). Mirrors
 /// `memento_embed_fastembed::model::MODEL_VERSION`; duplicated here because
 /// the embedder is injected as a port and the schema must know the model.
-pub const EMBEDDING_MODEL_VERSION: &str = "multilingual-e5-base-v0.0.3";
+/// Reflects the P2 int8 toggle (`MEMENTO_QUANTIZED_MODEL`) so chunks ingested
+/// under the quantized model carry the matching label.
+pub fn embedding_model_version() -> &'static str {
+    if std::env::var_os("MEMENTO_QUANTIZED_MODEL").is_some() {
+        "multilingual-e5-base-int8-v0.0.3"
+    } else {
+        "multilingual-e5-base-v0.0.3"
+    }
+}
 
 /// Max document blob accepted by `ingest_document` (design MC Q4: 10 MB).
 pub const MAX_BLOB_BYTES: u64 = 10 * 1024 * 1024;

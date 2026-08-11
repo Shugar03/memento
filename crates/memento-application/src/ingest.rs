@@ -26,7 +26,7 @@
 //! the ingest still succeeded and only the dedup probe for that doc degrades
 //! (traced loudly).
 
-use crate::{AppService, EMBEDDING_MODEL_VERSION, MAX_BLOB_BYTES, MAX_CHUNKS_PER_DOC};
+use crate::{AppService, MAX_BLOB_BYTES, MAX_CHUNKS_PER_DOC, embedding_model_version};
 use memento_domain::{
     ChoreId, ChunkId, DocId, DomainError, MemoryChunk, Provenance, SourceKind, TenantContext,
 };
@@ -270,7 +270,7 @@ impl AppService {
                         doc_id,
                         chunk_id: id,
                         created_at,
-                        embedding_model_version: EMBEDDING_MODEL_VERSION.to_string(),
+                        embedding_model_version: embedding_model_version().to_string(),
                         tenant_id: *ctx.tenant_id(),
                         workspace_id: *ctx.workspace_id(),
                         agent_id: ctx.agent_id().clone(),

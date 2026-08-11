@@ -71,7 +71,10 @@ embedding space, which materially improves cross-lingual cosine ranking
 on small corpora (the typical LATAM startup corpus size).
 
 The `embedder` crate's `MODEL_VERSION` and the application layer's
-`EMBEDDING_MODEL_VERSION` are pinned to `multilingual-e5-base-v0.0.3`.
+`embedding_model_version()` are pinned to `multilingual-e5-base-v0.0.3`,
+switching to `multilingual-e5-base-int8-v0.0.3` when the
+`MEMENTO_QUANTIZED_MODEL` env toggle is set (P2 — see the "int8 quantization"
+row below).
 The LanceDB `chunks` schema column `vector` (FixedSizeList(Float32,
 768)) and the testkit's `StubEmbedPort` were bumped together so
 production and tests stay in lockstep. The vector index `n_pq = dim/4`
@@ -83,7 +86,7 @@ queries return coherent results — vectors of different dimensions are
 not comparable.
 
 Bump policy: when fastembed ships a new E5 model version, update
-`MODEL_VERSION` (and mirror it in `memento_application::EMBEDDING_MODEL_VERSION`),
+`MODEL_VERSION` (and mirror it in `memento_application::embedding_model_version()`),
 refresh the `Cargo.lock`, and re-run the Phase 1 v3 ES-paraphrase
 queries to confirm the alignment improvement is preserved.
 
@@ -102,6 +105,7 @@ queries to confirm the alignment improvement is preserved.
 | `tokenizers` | `"0.22"` instead of `"0.23"` | fastembed 5.x requires `^0.22.2`; aligning the workspace pin avoids building two tokenizers copies. |
 | `text-splitter` | `"0.32"`, `tokenizers` feature **dropped** | The upstream `tokenizers` feature drags tokenizers `0.23` + `onig` into the tree (its `ChunkSizer` impl exists only for its own 0.23 copy), while the workspace pins 0.22 for fastembed. `memento-parse` implements `ChunkSizer` for a local wrapper (`SpanishTokenizer`, `src/chunk.rs`) over the single 0.22 copy, mirroring upstream counting semantics (padding skipped, truncation overflow accounted). |
 | `lancedb` | `"0.33"`, default features | The `native-tls` feature no longer exists in lancedb ≥0.27 (removed upstream). MVP uses local file-based stores — TLS irrelevant; revisit if remote object stores are added. |
+| `multilingual-e5-base` **int8 (P2, opt-in)** | user-defined ONNX via `TextEmbedding::try_new_from_user_defined`, behind `MEMENTO_QUANTIZED_MODEL` env | MultilingualE5Base has NO quantized variant in the fastembed enum, so the ONNX is self-quantized with `onnxruntime.quantization.quantize_dynamic` (dynamic, `QuantType.QInt8`, no calibration — 2026-08-11, `F:\target\tmp\memento-ir\quantize_e5base.py`). File 1058.6 MB → 265.3 MB (−75%). Wired in `crates/memento-embed-fastembed/src/model.rs`: when the env var is set, `FastEmbedBackend::try_new` reads the onnx + tokenizer files (same directory) and commits from memory with `Pooling::Mean` and `MAX_EMBED_LEN`, identical graph I/O and dim (768). **Opt-in by design**: the stock FP32 enum path remains the default until a broader corpus confirms the measured RRF MRR@5 cost (−0.036 on the 14-query golden set, gate PASS) is acceptable. Tokenizer files copied next to the onnx under `models/int8/` (git-ignored — not committed). Python `onnx` package was required by `onnxruntime.quantization` (installed alongside the existing `onnxruntime 1.28.0`). |
 
 ## Environment note (Windows local builds)
 
