@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/memento-logo.png" alt="Memento RS" width="220" />
+</p>
+
 # Memento RS
 
 > **La memoria persistente para agentes de IA. Un binario. Cero APIs externas. Cero egress.**
