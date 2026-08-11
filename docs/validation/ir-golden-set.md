@@ -1,10 +1,10 @@
 # IR Golden Set — MRR@5 Baseline + Int8 Quantization Comparison
 
 **Status**: Closed (gate PASS). **Date**: 2026-08-11.
-**Model**: `multilingual-e5-base-v0.0.3` (E5Base, 768d, ONNX cached) → `multilingual-e5-base-int8-v0.0.3` (dynamic int8, 265 MB)
-**Corpus snapshot**: tenant `es-base-test` (`019fee0a-...02c6`), workspace `f3e1b0a3-8da6-9fff-0fed-f1525868b9be` — *Hypnotic Writing* (Joe Vitale, 44 chunks) + *Audacious* (Mark Schaefer, ~525 chunks), ingested as PDFs with `document:pdf` provenance.
+**Model**: `multilingual-e5-base-v0.0.3` (E5Base, 768d, ONNX cached) → `multilingual-e5-base-int8-v0.0.3` (dynamic int8, 265 MB). Static int8 evaluated and **rejected** (see Follow-up section).
+**Corpus snapshot**: tenant `es-base-test` (`019fee0a-...02c6`), workspace `f3e1b0a3-8da6-9fff-0fed-f1525868b9be` — *Hypnotic Writing* (Joe Vitale, 44 chunks) + *Audacious* (Mark Schaefer, ~525 chunks), ingested as PDFs with `document:pdf` provenance. Follow-up broadened to 638 chunks / 10 docs (see below).
 **Release binary**: `target\release\memento.exe` — package A–E shipped (max_length 320, batch 8, embedding cache) + P2 int8 wiring.
-**Scripts**: `F:\target\tmp\memento-ir\run_golden_set.py` → `golden-set-baseline.json`; `run_golden_set_int8.py` → `golden-set-int8.json` (same dir).
+**Scripts**: `F:\target\tmp\memento-ir\run_golden_set.py` → `golden-set-baseline.json`; `run_golden_set_int8.py` → `golden-set-int8.json`; `run_golden_broad.py` → `broad-*.json` (same dir).
 **Toggle**: `MEMENTO_QUANTIZED_MODEL=<path-to-int8-model.onnx>` selects the int8 model; unset = stock FP32 (unchanged).
 
 ## Methodology
@@ -78,3 +78,33 @@ Per-query RRF deltas: `audience of one marketing` 1.0→0.5 and `differentiation
 - Re-ran `run_golden_set_int8.py` with `MEMENTO_QUANTIZED_MODEL=models\int8\multilingual-e5-base-int8\model.onnx` against the same corpus (no re-ingest — corpus vectors stay FP32, only query vectors come from int8; the realistic migration scenario).
 - **Verdict: PASS.** RRF MRR@5 drop 0.0357 ≤ 0.05, Recall@5 drop 0.0 ≤ 0.07.
 - The int8 model is wired as an **opt-in env toggle** (`MEMENTO_QUANTIZED_MODEL`), not the default, so the FP32 path stays untouched until a broader corpus confirms the 0.036 MRR cost is acceptable in production.
+
+## Follow-up: static int8 + corpus cleanup + broader validation (2026-08-11)
+
+### Corpus cleanup (tenant es-base-test)
+
+Removed 5 profiling-artifact docs (27 chunks) ingested by `bench-e5base`, `opt-ram`, and `ram-profile-int8` agents (text like `MedicionE5BaseMidRAM`, `Texto de prueba para medir RAM…`, repeated int8-sentence blobs). Tenant now holds exactly the 2 book docs (569 chunks) plus the new validation docs below.
+
+### Broader corpus
+
+Added 8 synthetic domain docs (+69 chunks): Rust systems engineering, GDPR/privacy law, marketing strategy, conversational English, product management, copywriting masterclass, sales psychology, brand building. Corpus: **638 chunks / 10 docs**. Golden-set queries unchanged (fixed evaluation).
+
+### Static int8 quantization
+
+- Built from the FP32 source via `quantize_static` (QDQ, per-channel, QInt8 weights+activations, MinMax calibration) on an opset-11→17 bumped model (`DequantizeLinear.axis` requires opset ≥ 13). 50 real chunk texts from the tenant used for calibration via `tokenizers` (HuggingFace `tokenizer.json`), no `transformers` needed.
+- Output **265.9 MB** (3.98x), loads in `onnxruntime.InferenceSession` and in fastembed user-defined path (verified via MEMENTO_QUANTIZED_MODEL).
+- Variants tested: per-channel QInt8 MinMax, per-tensor QInt8, per-tensor QUInt8. Entropy/Percentile calibration failed (OOM during calibration inference).
+
+### Broader-corpus comparison (RRF hybrid)
+
+| Model | MRR@5 | Recall@5 | RAM peak (search) | Disk MB | Adopt? |
+|---|---|---|---|---|---|
+| FP32 E5Base | **1.0000** | 1.00 | 1911 MB | 1058 | baseline |
+| int8 dynamic (shipped) | **1.0000** | 1.00 | **1081 MB** | 265 | **keep** |
+| int8 static per-channel QInt8 | 0.6607 | 0.93 | 1708 MB | 266 | reject |
+| int8 static per-tensor QInt8 | 0.7024 | 0.93 | — | 266 | reject |
+| int8 static per-tensor QUInt8 | 0.7202 | 1.00 | — | 265 | reject |
+
+**Decision: keep dynamic int8.** After the artifact cleanup, both FP32 and dynamic int8 score a perfect 1.0000 MRR@5 / 1.00 Recall@5 on the broader corpus (the previous −0.036 drop was driven by two artifact-stolen rank-1s; they were cleanup artifacts, not quantization loss). Static int8 quantizes *activations*, which degrades the E5 mean-pooled embedding space so badly that RRF MRR@5 collapses to 0.66–0.72 — and its QDQ graph runs *hotter* (1708 MB) than dynamic (1081 MB). Static fails both axes of the adoption rule (MRR ≥ dynamic AND RAM < dynamic); Recall@5 stays ≥ 0.93 in every variant.
+
+Static model (rejected) left at `models\int8\multilingual-e5-base-static-int8\` (git-ignored) for reference; scripts in `F:\target\tmp\memento-ir\` (`quant_static_e5base.py`, `run_golden_broad.py`).
