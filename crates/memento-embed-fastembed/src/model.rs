@@ -23,16 +23,29 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const MODEL_VERSION: &str = "multilingual-e5-base-v0.0.3";
 /// Version label when the int8-quantized user-defined model is active.
 pub const MODEL_VERSION_QUANTIZED: &str = "multilingual-e5-base-int8-v0.0.3";
-/// Env var pointing at the int8-quantized `model.onnx` (P2 quantize). When
-/// set, the loader uses `TextEmbedding::try_new_from_user_defined` with the
-/// tokenizer files sitting next to the onnx; when unset, the stock
-/// `MultilingualE5Base` download is used (unchanged behavior).
+/// Env var pointing at an int8-quantized `model.onnx` (P2 quantize). Overrides
+/// the default int8 model path; when unset, the loader uses the default int8
+/// model at `models/int8/...` (see DEFAULT_QUANTIZED_PATH).
 const QUANTIZED_MODEL_ENV: &str = "MEMENTO_QUANTIZED_MODEL";
+/// Env var that forces the stock FP32 `MultilingualE5Base` download (opt-out
+/// from the int8 default, e.g. for maximum quality or when the int8 model is
+/// not provisioned on the host).
+const FP32_MODEL_ENV: &str = "MEMENTO_FP32_MODEL";
+/// Default path of the int8-quantized model produced by the quantize script.
+const DEFAULT_QUANTIZED_PATH: &str = "models/int8/multilingual-e5-base-int8/model.onnx";
 
 /// The version label for the active model mode (env toggle aware). Called at
-/// loader construction so label and backend stay consistent.
+/// loader construction so label and backend stay consistent. Returns the int8
+/// label by default, falling back to the FP32 label when the int8 file is
+/// absent or the FP32 opt-out is set.
 fn active_model_version() -> &'static str {
-    if std::env::var_os(QUANTIZED_MODEL_ENV).is_some() {
+    if std::env::var_os(FP32_MODEL_ENV).is_some() {
+        return MODEL_VERSION;
+    }
+    let model_path = std::env::var_os(QUANTIZED_MODEL_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_QUANTIZED_PATH));
+    if model_path.is_file() {
         MODEL_VERSION_QUANTIZED
     } else {
         MODEL_VERSION
@@ -90,13 +103,26 @@ impl FastEmbedBackend {
         // which is compiled against the 1.28 API). Idempotent: the
         // internal `OnceLock` absorbs concurrent first-callers.
         crate::dylib::ensure_loaded();
-        if let Some(model_path) = std::env::var_os(QUANTIZED_MODEL_ENV) {
-            let model_path = PathBuf::from(model_path);
-            let model = Self::try_new_user_defined(&model_path)?;
-            return Ok(Self {
-                model: Mutex::new(model),
-                model_version: MODEL_VERSION_QUANTIZED,
-            });
+        // int8 is the default model (validated: same retrieval quality, -43%
+        // RAM, 4x smaller weights). Opt out to the stock FP32 download with
+        // MEMENTO_FP32_MODEL, or override the int8 path with
+        // MEMENTO_QUANTIZED_MODEL. If the int8 file is missing (fresh clone
+        // without the quantized model), fall back to FP32 gracefully.
+        if std::env::var_os(FP32_MODEL_ENV).is_none() {
+            let model_path = std::env::var_os(QUANTIZED_MODEL_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_QUANTIZED_PATH));
+            if model_path.is_file() {
+                let model = Self::try_new_user_defined(&model_path)?;
+                return Ok(Self {
+                    model: Mutex::new(model),
+                    model_version: MODEL_VERSION_QUANTIZED,
+                });
+            }
+            tracing::warn!(
+                "int8 model not found at {}; falling back to stock FP32 (run the quantize script to provision it)",
+                model_path.display()
+            );
         }
         let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Base)
             .with_cache_dir(cache_dir)
@@ -542,9 +568,24 @@ mod tests {
     #[test]
     fn active_model_version_switches_to_quantized_label() {
         let _guard = QUANTIZED_ENV_LOCK.lock().unwrap();
+        // Point at a real file so the `is_file()` gate passes (default behavior
+        // is int8-first with FP32 fallback when the onnx is missing).
+        let dir = std::env::temp_dir().join("memento-int8-label-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let model_path = dir.join("model.onnx");
+        std::fs::write(&model_path, b"fake").unwrap();
         unsafe {
-            std::env::set_var(QUANTIZED_MODEL_ENV, "C:\\models\\int8\\model.onnx");
+            std::env::set_var(QUANTIZED_MODEL_ENV, &model_path);
         }
         assert_eq!(active_model_version(), MODEL_VERSION_QUANTIZED);
+    }
+
+    #[test]
+    fn active_model_version_falls_back_when_quantized_path_missing() {
+        let _guard = QUANTIZED_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var(QUANTIZED_MODEL_ENV, "C:\\nonexistent\\int8\\model.onnx");
+        }
+        assert_eq!(active_model_version(), MODEL_VERSION);
     }
 }
