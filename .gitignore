@@ -28,3 +28,6 @@ coverage/
 
 # NOTE: Cargo.lock IS committed on purpose — this workspace ships binaries
 # (CLI, MCP server, worker) and locked builds are required.
+
+# User's private architecture manifesto (not for public repo)
+manifesto memoria.md

@@ -25,3 +25,6 @@ benches/
 # host can mount Node from outside if it wants the 14 document formats)
 node_modules/
 *.node
+
+# Private manifesto — never in image context
+manifesto memoria.md
