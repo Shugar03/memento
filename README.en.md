@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/memento-logo.png" alt="Memento RS" width="220" />
+  <img src="assets/memento-logo.png" alt="Memento RS" width="560" />
 </p>
 
 # Memento RS
