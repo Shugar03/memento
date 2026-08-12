@@ -24,9 +24,21 @@ use memento_domain::{ChunkId, DomainError, MemoryChunk, TenantContext};
 use memento_lancedb::{fetch_search_hits, full_text_search, rrf_fuse, vector_search};
 use memento_ports::{SearchFilters, SearchHit, SearchPort, SearchQuery};
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// RRF fusion constant (standard k=60; discovery + design: rank-based sum).
 const RRF_K: f32 = 60.0;
+
+/// Fast content hash for the query embed cache (B1). Same DefaultHasher /
+/// SipHash as `hash_text` in `memento_embed_fastembed::model` (edit C);
+/// local copy to avoid cross-crate coupling. Deterministic within a process
+/// run — exactly what the per-process cache needs; no new dependency.
+fn hash_query(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
 
 impl AppService {
     /// Search the workspace (REQ-MR-001/002/003): BM25 by default, RRF hybrid
@@ -58,23 +70,7 @@ impl AppService {
         ctx: &TenantContext,
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, DomainError> {
-        // REQ-MR-003: hybrid without embeddings is a structured error.
-        let embedder = self
-            .embedder
-            .as_ref()
-            .ok_or_else(|| DomainError::InvalidInput {
-                message: "hybrid search requires the embedding model \
-                      (runs with --no-embeddings; switch to FTS mode)"
-                    .into(),
-            })?;
-
-        let vectors = embedder.embed(&[query.query.as_str()]).await?;
-        let query_vec = vectors
-            .into_iter()
-            .next()
-            .ok_or_else(|| DomainError::EmbeddingFailed {
-                message: "embedder returned no vector for the query".into(),
-            })?;
+        let query_vec = self.embed_query(&query.query).await?;
 
         // Both legs are tenant+workspace scoped (REQ-MR-006). The FTS leg
         // honors doc/source filters; the vector leg scopes workspace only
@@ -120,6 +116,38 @@ impl AppService {
         Ok(hits)
     }
 
+    /// Embed a search query behind the query cache (B1): exact-text hash hit
+    /// → reuse the stored vector (~0 ms, no ONNX inference); miss → embed
+    /// once, store, and clear when over the cap. Exact match only —
+    /// deterministic and safe. Only ever called from the hybrid (RRF) path,
+    /// so FTS-only searches never touch the cache.
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, DomainError> {
+        // REQ-MR-003: hybrid without embeddings is a structured error.
+        let embedder = self
+            .embedder
+            .as_ref()
+            .ok_or_else(|| DomainError::InvalidInput {
+                message: "hybrid search requires the embedding model \
+                      (runs with --no-embeddings; switch to FTS mode)"
+                    .into(),
+            })?;
+
+        let key = hash_query(query);
+        if let Some(vec) = self.query_embed_cache.get(key)? {
+            return Ok(vec);
+        }
+
+        let vectors = embedder.embed(&[query]).await?;
+        let vec = vectors
+            .into_iter()
+            .next()
+            .ok_or_else(|| DomainError::EmbeddingFailed {
+                message: "embedder returned no vector for the query".into(),
+            })?;
+        self.query_embed_cache.insert(key, vec.clone())?;
+        Ok(vec)
+    }
+
     /// Fetch one chunk by id within the bound tenant (REQ-MR-005): foreign
     /// ids resolve to `None` — no existence leak.
     pub async fn get_chunk(
@@ -151,6 +179,7 @@ mod tests {
     use memento_domain::DocId;
     use memento_ports::{IngestTextRequest, SearchFilters};
     use memento_testkit::{TempStore, TestClock, spanish_corpus};
+    use std::sync::{Arc, Mutex};
 
     fn text_request(text: &str) -> IngestTextRequest {
         IngestTextRequest {
@@ -359,5 +388,138 @@ mod tests {
         );
         // Doc ids are independent namespaces: an unknown doc id is fine.
         let _ = DocId::new();
+    }
+
+    /// Counting embed port: records every text sent to inference so tests
+    /// can assert the query cache skips re-embedding (B1). Same shape as
+    /// `CacheProbeBackend` in `memento_embed_fastembed::model`.
+    struct CountingEmbedPort {
+        embedded: Mutex<Vec<String>>,
+        dim: usize,
+    }
+
+    impl CountingEmbedPort {
+        fn new() -> Self {
+            Self {
+                embedded: Mutex::new(Vec::new()),
+                dim: 768,
+            }
+        }
+
+        fn embeddings_of(&self, text: &str) -> usize {
+            self.embedded
+                .lock()
+                .expect("embed log lock")
+                .iter()
+                .filter(|t| *t == text)
+                .count()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl memento_ports::EmbedPort for CountingEmbedPort {
+        async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, DomainError> {
+            self.embedded
+                .lock()
+                .expect("embed log lock")
+                .extend(texts.iter().map(|t| t.to_string()));
+            Ok(texts
+                .iter()
+                .map(|t| memento_testkit::deterministic_embed(t, self.dim))
+                .collect())
+        }
+    }
+
+    /// An app whose embedder counts how many times each text hits inference.
+    /// `AppService::open` pre-warms with `[""]` (B3), so the log starts with
+    /// the warmup entry — query-specific assertions count only the query text.
+    async fn app_with_counting_embed(ts: &TempStore) -> (AppService, Arc<CountingEmbedPort>) {
+        let port = Arc::new(CountingEmbedPort::new());
+        let app = AppService::open(
+            &ts.ctx(),
+            ts.root(),
+            crate::test_util::real_fallback_parse(),
+            Some(port.clone() as Arc<dyn memento_ports::EmbedPort>),
+            Arc::new(TestClock::default()),
+        )
+        .await
+        .expect("app opens");
+        (app, port)
+    }
+
+    #[tokio::test]
+    async fn query_embed_cache_hit_skips_inference() {
+        // B1: the same exact query string embedded twice → inference once,
+        // and the cache hit returns the identical vector (same results).
+        let ts = TempStore::new();
+        let (app, port) = app_with_counting_embed(&ts).await;
+        app.ingest_text(
+            &ts.ctx(),
+            text_request("La memoria es un río subterráneo que nunca deja de fluir."),
+        )
+        .await
+        .expect("doc a");
+        let mut q = SearchQuery::new("hipnotic headlines", 5, *ts.workspace_id());
+        q.rrf_enabled = true;
+
+        let first = app.search(&ts.ctx(), q.clone()).await.expect("hybrid ok");
+        assert_eq!(
+            port.embeddings_of("hipnotic headlines"),
+            1,
+            "first occurrence runs ONNX inference"
+        );
+
+        let second = app.search(&ts.ctx(), q).await.expect("cached hybrid ok");
+        assert_eq!(
+            port.embeddings_of("hipnotic headlines"),
+            1,
+            "cache hit skips inference (0 ms)"
+        );
+        assert_eq!(
+            first, second,
+            "cached query vector yields identical results"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_embed_cache_miss_embeds_new() {
+        // B1: a different exact query string is a cache miss → inference runs.
+        let ts = TempStore::new();
+        let (app, port) = app_with_counting_embed(&ts).await;
+        app.ingest_text(
+            &ts.ctx(),
+            text_request("La tecnología transforma la manera en que trabajamos cada día."),
+        )
+        .await
+        .expect("doc a");
+
+        let mut q1 = SearchQuery::new("hipnotic headlines", 5, *ts.workspace_id());
+        q1.rrf_enabled = true;
+        app.search(&ts.ctx(), q1).await.expect("first hybrid");
+        assert_eq!(port.embeddings_of("hipnotic headlines"), 1);
+
+        let mut q2 = SearchQuery::new("subterranean rivers", 5, *ts.workspace_id());
+        q2.rrf_enabled = true;
+        app.search(&ts.ctx(), q2).await.expect("second hybrid");
+        assert_eq!(
+            port.embeddings_of("subterranean rivers"),
+            1,
+            "different query is a miss and embeds"
+        );
+        assert_eq!(
+            port.embeddings_of("hipnotic headlines"),
+            1,
+            "old entry intact"
+        );
+    }
+
+    #[test]
+    fn query_embed_cache_caps_at_max() {
+        // B1: inserting past the cap clears the whole cache (bounds memory).
+        let cache = crate::QueryEmbedCache::new(4);
+        for i in 0..5u64 {
+            cache.insert(i, vec![i as f32]).expect("insert");
+        }
+        assert!(cache.len() <= 4, "cache cleared when over the cap");
     }
 }

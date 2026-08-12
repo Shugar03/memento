@@ -59,6 +59,7 @@ use memento_lancedb::LanceStore;
 use memento_parse::chunk::Chunker;
 use memento_ports::{EmbedPort, KnowledgePort, ParsePort};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -86,6 +87,12 @@ pub const MAX_CHUNKS_PER_DOC: usize = 10_000;
 /// errors on larger batches — RESOURCE_EXHAUSTED).
 pub const EMBED_BATCH: usize = 64;
 
+/// Max entries in the query embed cache (B1). Beyond this the whole cache is
+/// cleared to bound memory; query strings repeat far less than chunks, so a
+/// cleared cache repopulates quickly. Mirrors the chunk cache cap in
+/// `memento_embed_fastembed::model` (edit C).
+pub(crate) const MAX_QUERY_CACHE_ENTRIES: usize = 100_000;
+
 /// Injectable clock (REQ-ML-003, design D5): application code computes "now"
 /// through this trait so retention tests can advance time without sleeping.
 pub trait Clock: Send + Sync {
@@ -100,6 +107,57 @@ pub struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> chrono::DateTime<chrono::Utc> {
         chrono::Utc::now()
+    }
+}
+
+/// Bounded query-embedding cache (B1): exact text hash → vector. Repeated /
+/// near-repeated query strings skip ONNX inference entirely (~0 ms on hit;
+/// each query embedding costs ~100 ms today). Mirrors the chunk embed cache
+/// in `memento_embed_fastembed::model` (edit C). Exact match only — no fuzzy
+/// or prefix matching: deterministic and safe. On overflow the whole cache is
+/// cleared to bound memory.
+pub(crate) struct QueryEmbedCache {
+    inner: Mutex<HashMap<u64, Vec<f32>>>,
+    cap: usize,
+}
+
+impl QueryEmbedCache {
+    /// A cache that clears itself once it exceeds `cap` entries.
+    pub(crate) fn new(cap: usize) -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            cap,
+        }
+    }
+
+    /// Look up a cached vector by its exact-text hash.
+    pub(crate) fn get(&self, key: u64) -> Result<Option<Vec<f32>>, DomainError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| DomainError::Internal {
+                message: "query embed cache lock poisoned".into(),
+            })?
+            .get(&key)
+            .cloned())
+    }
+
+    /// Insert a vector; clears the whole cache when over the cap.
+    pub(crate) fn insert(&self, key: u64, vec: Vec<f32>) -> Result<(), DomainError> {
+        let mut inner = self.inner.lock().map_err(|_| DomainError::Internal {
+            message: "query embed cache lock poisoned".into(),
+        })?;
+        inner.insert(key, vec);
+        if inner.len() > self.cap {
+            inner.clear();
+        }
+        Ok(())
+    }
+
+    /// Current entry count (tests).
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.inner.lock().expect("cache lock").len()
     }
 }
 
@@ -119,6 +177,11 @@ pub struct AppService {
     /// `AppService::open` does the eager warm-up so the first user-facing
     /// `code.search` call is fast (the ONNX cold-start used to cost ~5 s).
     embed_warm: AtomicBool,
+    /// Query embedding cache (B1): exact query text → vector, so repeated /
+    /// near-repeated agent queries skip ONNX inference entirely (~0 ms on
+    /// hit vs ~100 ms per query embedding today). Only the hybrid (RRF) path
+    /// touches this.
+    query_embed_cache: QueryEmbedCache,
 }
 
 impl std::fmt::Debug for AppService {
@@ -163,6 +226,7 @@ impl AppService {
             root,
             code: Mutex::new(None),
             embed_warm: AtomicBool::new(false),
+            query_embed_cache: QueryEmbedCache::new(MAX_QUERY_CACHE_ENTRIES),
         };
         // B3 fix (obs 2663): pre-warm the embedder at tenant open so the
         // first user-facing `code.search` does NOT pay the ~5 s ONNX cold
@@ -173,7 +237,10 @@ impl AppService {
         // error with the same surface. This preserves REQ-MC-007's
         // structured-error invariant for ingest with a broken embedder.
         if let Err(err) = service.warm_embedder().await {
-            tracing::warn!(?err, "embedder pre-warm failed; first call will pay the cold-start cost");
+            tracing::warn!(
+                ?err,
+                "embedder pre-warm failed; first call will pay the cold-start cost"
+            );
         }
         Ok(service)
     }
