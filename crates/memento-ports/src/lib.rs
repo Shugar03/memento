@@ -11,6 +11,7 @@ pub mod ingest;
 pub mod knowledge;
 pub mod lifecycle;
 pub mod parse;
+pub mod rerank;
 pub mod search;
 pub mod tenant_resolver;
 
@@ -19,6 +20,7 @@ pub use ingest::{IngestDocumentRequest, IngestPort, IngestResult, IngestTextRequ
 pub use knowledge::{KnowledgePort, ProjectOverview};
 pub use lifecycle::{DeleteReport, DeleteScope, LifecyclePort, SweepReport};
 pub use parse::{ParsePort, ParsedDocument};
+pub use rerank::RerankPort;
 pub use search::{DEFAULT_RRF_K, SearchFilters, SearchHit, SearchPort, SearchQuery};
 pub use tenant_resolver::TenantResolver;
 
@@ -45,6 +47,7 @@ mod tests {
         assert_eq!(q.top_k, 5);
         assert!(!q.rrf_enabled, "RRF must default to off (REQ-MR-002)");
         assert_eq!(q.rrf_k, search::DEFAULT_RRF_K, "RRF k defaults to 60");
+        assert!(!q.rerank, "rerank must default to off (A1 opt-in)");
         assert!(q.filters.is_none());
 
         // Type-level proof: the only constructor takes a WorkspaceId by value;
@@ -98,6 +101,19 @@ mod tests {
         impl EmbedPort for AllPorts {
             async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, DomainError> {
                 unimplemented!()
+            }
+        }
+
+        #[async_trait]
+        impl RerankPort for AllPorts {
+            async fn rerank(&self, _query: &str, _texts: &[&str]) -> Result<Vec<f32>, DomainError> {
+                unimplemented!()
+            }
+            fn is_enabled(&self) -> bool {
+                true
+            }
+            fn model_version(&self) -> Option<&'static str> {
+                None
             }
         }
 
@@ -223,6 +239,7 @@ mod tests {
         let _search: Box<dyn SearchPort> = Box::new(AllPorts);
         let _ingest: Box<dyn IngestPort> = Box::new(AllPorts);
         let _embed: Box<dyn EmbedPort> = Box::new(AllPorts);
+        let _rerank: Box<dyn RerankPort> = Box::new(AllPorts);
         let _resolver: Box<dyn TenantResolver> = Box::new(AllPorts);
         let _lifecycle: Box<dyn LifecyclePort> = Box::new(AllPorts);
         let _knowledge: Box<dyn KnowledgePort> = Box::new(AllPorts);

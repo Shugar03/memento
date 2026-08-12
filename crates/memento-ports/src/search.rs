@@ -43,12 +43,18 @@ pub struct SearchQuery {
     /// per-query override for Spanish tuning.
     #[serde(default = "default_rrf_k")]
     pub rrf_k: f32,
+    /// Cross-encoder rerank of the fused top-10 (A1, hybrid mode only,
+    /// opt-in): reorders the candidates by deep relevance and returns the
+    /// top-5. Requires the reranker capability (`MEMENTO_RERANK=1`); when
+    /// unset the query keeps the fused order with a warning. Off by default.
+    #[serde(default)]
+    pub rerank: bool,
     pub filters: Option<SearchFilters>,
 }
 
 impl SearchQuery {
     /// Build a query. `rrf_enabled` defaults to `false`, `rrf_k` to the
-    /// standard 60, filters to `None`.
+    /// standard 60, `rerank` to `false`, filters to `None`.
     pub fn new(query: impl Into<String>, top_k: usize, workspace_id: WorkspaceId) -> Self {
         Self {
             query: query.into(),
@@ -56,6 +62,7 @@ impl SearchQuery {
             workspace_id,
             rrf_enabled: false,
             rrf_k: DEFAULT_RRF_K,
+            rerank: false,
             filters: None,
         }
     }

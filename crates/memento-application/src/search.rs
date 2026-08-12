@@ -28,6 +28,10 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+/// Candidate pool fed to the cross-encoder reranker (A1): the fused top-10
+/// gives the reranker enough material to reorder into the requested top-5.
+const RERANK_CANDIDATES: usize = 10;
+
 /// Fast content hash for the query embed cache (B1). Same DefaultHasher /
 /// SipHash as `hash_text` in `memento_embed_fastembed::model` (edit C);
 /// local copy to avoid cross-crate coupling. Deterministic within a process
@@ -52,6 +56,15 @@ impl AppService {
         ctx: &TenantContext,
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, DomainError> {
+        if query.rerank && !query.rrf_enabled {
+            // A1 scope: rerank post-processes the RRF fusion (top-10 → top-5).
+            // An FTS-only search has no fused candidate pool, so the opt-in
+            // degrades to the FTS order with a warning — never a silent
+            // misbehavior, and never an error.
+            tracing::warn!(
+                "rerank applies to hybrid (rrf) searches only; ignoring for FTS-only query"
+            );
+        }
         if query.rrf_enabled {
             self.hybrid_search(ctx, query).await
         } else {
@@ -94,7 +107,19 @@ impl AppService {
 
         let fused = rrf_fuse(&vec_leg, &fts_leg, query.rrf_k);
         let scores: HashMap<ChunkId, f32> = fused.iter().copied().collect();
-        let ids: Vec<ChunkId> = fused.iter().take(query.top_k).map(|(id, _)| *id).collect();
+
+        // A1 cross-encoder rerank: pull a wider candidate pool (top-10) so the
+        // reranker has enough material to reorder into the requested top-5.
+        let candidate_count = if query.rerank {
+            query.top_k.max(RERANK_CANDIDATES)
+        } else {
+            query.top_k
+        };
+        let ids: Vec<ChunkId> = fused
+            .iter()
+            .take(candidate_count)
+            .map(|(id, _)| *id)
+            .collect();
 
         let mut hits = fetch_search_hits(&self.store, ctx, &ids).await?;
         for hit in &mut hits {
@@ -103,14 +128,71 @@ impl AppService {
         if let Some(filters) = &query.filters {
             hits.retain(|h| filters_match(filters, h));
         }
-        // Deterministic final ranking: fused score desc, id tiebreak.
+        // Deterministic base ranking: fused score desc, id tiebreak.
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.chunk_id.to_string().cmp(&b.chunk_id.to_string()))
         });
+
+        if query.rerank {
+            hits = self.rerank_hits(&query.query, hits).await?;
+        }
+
         hits.truncate(query.top_k);
+        Ok(hits)
+    }
+
+    /// A1 cross-encoder rerank: score the fused candidates with the reranker
+    /// and reorder them by deep relevance. When the capability is off (no
+    /// reranker attached, or `MEMENTO_RERANK` unset) logs a warning and keeps
+    /// the fused order — never a silent or degraded result. Errors from the
+    /// reranker (missing model, inference failure) propagate as structured
+    /// `RERANK_FAILED` errors.
+    async fn rerank_hits(
+        &self,
+        query: &str,
+        mut hits: Vec<SearchHit>,
+    ) -> Result<Vec<SearchHit>, DomainError> {
+        let Some(reranker) = self.reranker.as_ref() else {
+            tracing::warn!(
+                "rerank requested but no reranker attached (MEMENTO_RERANK=1 enables it); keeping fused order"
+            );
+            return Ok(hits);
+        };
+        if !reranker.is_enabled() {
+            tracing::warn!(
+                "rerank requested but disabled (MEMENTO_RERANK=1 enables it); keeping fused order"
+            );
+            return Ok(hits);
+        }
+        let texts: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+        if texts.is_empty() {
+            return Ok(hits);
+        }
+        let scores = reranker.rerank(query, &texts).await?;
+        if scores.len() != hits.len() {
+            return Err(DomainError::Internal {
+                message: format!(
+                    "reranker returned {} scores for {} hits",
+                    scores.len(),
+                    hits.len()
+                ),
+            });
+        }
+        // The rerank score becomes the hit score so consumers see the deep
+        // relevance, not the fused rank.
+        for (hit, score) in hits.iter_mut().zip(scores) {
+            hit.score = score;
+        }
+        // Deterministic final ranking: rerank score desc, id tiebreak.
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.chunk_id.to_string().cmp(&b.chunk_id.to_string()))
+        });
         Ok(hits)
     }
 
@@ -176,7 +258,7 @@ mod tests {
     use crate::test_util::{other_workspace_ctx, test_app, test_app_no_embed};
     use memento_domain::DocId;
     use memento_ports::{DEFAULT_RRF_K, IngestTextRequest, SearchFilters};
-    use memento_testkit::{TempStore, TestClock, spanish_corpus};
+    use memento_testkit::{StubEmbedPort, TempStore, TestClock, spanish_corpus};
     use std::sync::{Arc, Mutex};
 
     fn text_request(text: &str) -> IngestTextRequest {
@@ -327,6 +409,7 @@ mod tests {
                     workspace_id: *ts.workspace_id(),
                     rrf_enabled: false,
                     rrf_k: DEFAULT_RRF_K,
+                    rerank: false,
                     filters: Some(SearchFilters {
                         doc_id: Some(doc_a),
                         source: None,
@@ -349,6 +432,7 @@ mod tests {
                     workspace_id: *ts.workspace_id(),
                     rrf_enabled: true,
                     rrf_k: DEFAULT_RRF_K,
+                    rerank: false,
                     filters: Some(SearchFilters {
                         doc_id: Some(doc_a),
                         source: None,
@@ -380,6 +464,7 @@ mod tests {
                         workspace_id: *other_ws.workspace_id(),
                         rrf_enabled: rrf,
                         rrf_k: DEFAULT_RRF_K,
+                        rerank: false,
                         filters: None,
                     },
                 )
@@ -551,5 +636,101 @@ mod tests {
             cache.insert(i, vec![i as f32]).expect("insert");
         }
         assert!(cache.len() <= 4, "cache cleared when over the cap");
+    }
+
+    /// Stub reranker that inverts the fused order (deep-relevance flip): the
+    /// candidate at fused index `i` scores `i`, so the LAST fused candidate
+    /// lands on top. Proves the rerank actually reorders.
+    struct InvertingRerankPort;
+
+    #[async_trait::async_trait]
+    impl memento_ports::RerankPort for InvertingRerankPort {
+        async fn rerank(&self, _query: &str, texts: &[&str]) -> Result<Vec<f32>, DomainError> {
+            Ok((0..texts.len()).map(|i| i as f32).collect())
+        }
+        fn is_enabled(&self) -> bool {
+            true
+        }
+        fn model_version(&self) -> Option<&'static str> {
+            Some("fake-invert-rerank")
+        }
+    }
+
+    #[tokio::test]
+    async fn rerank_reorders_top_hits_when_opted_in() {
+        // A1: with the capability on and rerank=true, the cross-encoder (a
+        // stub that inverts the order) reorders the fused candidates so the
+        // top hit changes; the fused order is untouched when rerank is off.
+        let ts = TempStore::new();
+        let app = AppService::open(
+            &ts.ctx(),
+            ts.root(),
+            crate::test_util::real_fallback_parse(),
+            Some(Arc::new(StubEmbedPort::default())),
+            Arc::new(TestClock::default()),
+        )
+        .await
+        .expect("open")
+        .with_reranker(Arc::new(InvertingRerankPort));
+        app.ingest_text(
+            &ts.ctx(),
+            text_request("La memoria es un río subterráneo que nunca deja de fluir."),
+        )
+        .await
+        .expect("doc a");
+        app.ingest_text(
+            &ts.ctx(),
+            text_request("La tecnología transforma la manera en que trabajamos cada día."),
+        )
+        .await
+        .expect("doc b");
+
+        let make_query = |rerank: bool| SearchQuery {
+            query: "memoria río tecnología".into(),
+            top_k: 5,
+            workspace_id: *ts.workspace_id(),
+            rrf_enabled: true,
+            rrf_k: DEFAULT_RRF_K,
+            rerank,
+            filters: None,
+        };
+
+        let base = app
+            .search(&ts.ctx(), make_query(false))
+            .await
+            .expect("base hybrid");
+        assert!(!base.is_empty(), "fused candidates exist");
+        let base_top = base[0].chunk_id;
+
+        let reranked = app
+            .search(&ts.ctx(), make_query(true))
+            .await
+            .expect("reranked hybrid");
+        assert!(!reranked.is_empty());
+        assert_ne!(
+            reranked[0].chunk_id, base_top,
+            "inverting rerank must flip the top hit"
+        );
+        // The rerank score becomes the hit score: top candidate is the last
+        // fused one (highest inverted score).
+        assert_eq!(
+            reranked[0].score,
+            (reranked.len() - 1) as f32,
+            "deep-relevance score on top"
+        );
+    }
+
+    #[tokio::test]
+    async fn rerank_without_capability_keeps_fused_order() {
+        // A1: rerank=true on an app with NO reranker attached degrades to the
+        // fused order (warning path), never an error and never a reorder.
+        let ts = TempStore::new();
+        let app = corpus_app(&ts).await;
+        let mut q = SearchQuery::new("memoria río", 10, *ts.workspace_id());
+        q.rrf_enabled = true;
+        q.rerank = true;
+
+        let hits = app.search(&ts.ctx(), q).await.expect("rerank degrades ok");
+        assert!(!hits.is_empty(), "results returned unchanged");
     }
 }

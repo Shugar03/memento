@@ -63,6 +63,7 @@ pub enum StringKey {
     ErrIo,
     ErrParse,
     ErrEmbeddingFailed,
+    ErrRerankFailed,
     ErrBackupCorrupt,
     ErrBackupVersion,
     ErrSubprocessTimeout,
@@ -102,6 +103,7 @@ pub enum StringKey {
     CliHelpWorkspaceArg,
     CliHelpRrfArg,
     CliHelpRrfKArg,
+    CliHelpRerankArg,
     CliHelpNameArg,
     CliHelpDaysArg,
     CliHelpChunkArg,
@@ -123,7 +125,7 @@ pub enum StringKey {
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 87] = [
+    pub const ALL: [StringKey; 89] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -156,6 +158,7 @@ impl StringKey {
         StringKey::ErrIo,
         StringKey::ErrParse,
         StringKey::ErrEmbeddingFailed,
+        StringKey::ErrRerankFailed,
         StringKey::ErrBackupCorrupt,
         StringKey::ErrBackupVersion,
         StringKey::ErrSubprocessTimeout,
@@ -194,6 +197,7 @@ impl StringKey {
         StringKey::CliHelpWorkspaceArg,
         StringKey::CliHelpRrfArg,
         StringKey::CliHelpRrfKArg,
+        StringKey::CliHelpRerankArg,
         StringKey::CliHelpNameArg,
         StringKey::CliHelpDaysArg,
         StringKey::CliHelpChunkArg,
@@ -270,6 +274,7 @@ pub fn es(key: StringKey) -> &'static str {
         StringKey::ErrIo => "Error de entrada/salida.",
         StringKey::ErrParse => "No se pudo analizar el documento.",
         StringKey::ErrEmbeddingFailed => "Falló la generación de embeddings.",
+        StringKey::ErrRerankFailed => "Falló el reordenamiento con el cross-encoder.",
         StringKey::ErrBackupCorrupt => {
             "El respaldo está corrupto (checksum o descifrado fallaron)."
         }
@@ -331,6 +336,9 @@ pub fn es(key: StringKey) -> &'static str {
         StringKey::CliHelpWorkspaceArg => "Workspace (por defecto el del tenant).",
         StringKey::CliHelpRrfArg => "Búsqueda híbrida con RRF.",
         StringKey::CliHelpRrfKArg => "Constante k de fusión RRF (híbrido; por defecto 60).",
+        StringKey::CliHelpRerankArg => {
+            "Reordenar los primeros resultados con el cross-encoder (requiere MEMENTO_RERANK=1; solo híbrido)."
+        }
         StringKey::CliHelpNameArg => "Nombre del tenant.",
         StringKey::CliHelpDaysArg => "Días de retención (0 desactiva).",
         StringKey::CliHelpChunkArg => "Id del fragmento.",
@@ -407,6 +415,7 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::ErrIo => "I/O failure.",
         StringKey::ErrParse => "Document parsing failed.",
         StringKey::ErrEmbeddingFailed => "Embedding generation failed.",
+        StringKey::ErrRerankFailed => "Cross-encoder rerank failed.",
         StringKey::ErrBackupCorrupt => "Backup is corrupt (checksum or decryption failed).",
         StringKey::ErrBackupVersion => "Backup schema version mismatch.",
         StringKey::ErrSubprocessTimeout => "Helper subprocess exceeded 60 seconds.",
@@ -458,6 +467,9 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpWorkspaceArg => "Workspace (defaults to the tenant's).",
         StringKey::CliHelpRrfArg => "Hybrid search with RRF.",
         StringKey::CliHelpRrfKArg => "RRF fusion constant k (hybrid; default 60).",
+        StringKey::CliHelpRerankArg => {
+            "Rerank the top candidates with the cross-encoder (requires MEMENTO_RERANK=1; hybrid only)."
+        }
         StringKey::CliHelpNameArg => "Tenant name.",
         StringKey::CliHelpDaysArg => "Retention days (0 disables).",
         StringKey::CliHelpChunkArg => "Chunk id.",

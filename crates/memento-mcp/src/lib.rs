@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use memento_application::{AppService, SystemClock};
 use memento_domain::{DomainError, SourceKind, TenantContext};
-use memento_embed_fastembed::{FastEmbedEmbedder, ModelLoader};
+use memento_embed_fastembed::{FastEmbedEmbedder, FastReranker, ModelLoader, Reranker};
 use memento_i18n::{I18n, Locale};
 use memento_parse::ParseService;
 use memento_tenant::TenantResolverImpl;
@@ -86,6 +86,12 @@ impl McpServer {
                 ModelLoader::new(opts.root.join("models"), true),
             ))))
         };
+        // A1 cross-encoder reranker: lazy behind the MEMENTO_RERANK capability
+        // toggle; the loader is cheap to construct and the ~543 MB int8 model
+        // only loads on a per-query opt-in (SearchQuery.rerank).
+        let reranker: Arc<dyn memento_ports::RerankPort> = Arc::new(FastReranker::new(Arc::new(
+            Reranker::new(opts.root.clone()),
+        )));
         let app = AppService::open(
             &ctx,
             &opts.root,
@@ -93,7 +99,8 @@ impl McpServer {
             embedder,
             Arc::new(SystemClock),
         )
-        .await?;
+        .await?
+        .with_reranker(reranker);
         Ok(Self::from_app(app, ctx, opts.locale.unwrap_or_default()))
     }
 

@@ -36,8 +36,8 @@ fn parse_rrf_k(m: &ArgMatches) -> Result<f32, DomainError> {
     Ok(raw)
 }
 
-/// `search <query> [--top-k N] [--workspace <uuid>] [--rrf] [--doc-id]
-/// [--source ...]` (REQ-MR-001/002/003/006).
+/// `search <query> [--top-k N] [--workspace <uuid>] [--rrf] [--rerank]
+/// [--doc-id] [--source ...]` (REQ-MR-001/002/003/006, A1).
 pub async fn run_search(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     let query = m.get_one::<String>("query").expect("clap: required");
     let top_k: usize = m
@@ -61,6 +61,7 @@ pub async fn run_search(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError>
                 workspace_id: workspace,
                 rrf_enabled: m.get_flag("rrf"),
                 rrf_k,
+                rerank: m.get_flag("rerank"),
                 filters,
             },
         )

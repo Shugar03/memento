@@ -122,3 +122,44 @@ The golden set moved from a manual Python script into the repo as a **determinis
 - **CI**: `.github/workflows/ci.yml` `ir-gate` job provisions the int8 model (`scripts/provision_int8.py`, HF FP32 download + dynamic QInt8 quantize, cached) and runs `cargo test -p memento-ir-gate --test ir_gate` with `MEMENTO_IR_GATE=1`. The fast `test` job runs the same gate in stub mode.
 - **Extending**: add a fixture doc, add a query whose `expected_fragments` are substrings of that doc, keep thresholds only as high as the real model actually achieves.
 
+## A1 cross-encoder rerank (item 3 — 2026-08-12)
+
+Added an optional cross-encoder reranking stage (`bge-reranker-v2-m3`, dynamic
+int8, ~543 MB) that post-processes the RRF fused top-10 and reorders it into
+the requested top-5. Full details in the crate + `docs/dependencies.md`; the
+adoption evidence is here.
+
+### Configuration
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `MEMENTO_RERANK=1` | off (capability) | Enables model loading. Never loaded when unset — zero cost. |
+| `SearchQuery.rerank` / `--rerank` / MCP `rerank` | false (per-query opt-in) | Whether a specific search pays the inference cost. |
+| `MEMENTO_RERANK_MODEL` | `<root>/models/int8/bge-reranker-v2-m3-int8/model.onnx` | Override the int8 model path. |
+
+Lazy, single-flight load mirrors the embedder's `ModelLoader`: the first
+reranked query pays the ONNX session init (~3-5 s) once, then resident.
+Provisioning: `crates/memento-ir-gate/scripts/provision_bge_reranker.py`
+(HF `rozgo/bge-reranker-v2-m3` FP32 → dynamic QInt8).
+
+### Adoption comparison — 50-query golden set, real int8 models (`MEMENTO_IR_GATE=1`)
+
+Manual gate (`cargo test -p memento-ir-gate --test ir_gate rerank_comparison -- --ignored --nocapture`):
+
+| Mode | MRR@5 | Recall@5 |
+|---|---|---|
+| RRF (no rerank) — baseline | **0.9650** | **0.9800** |
+| RRF + cross-encoder rerank | **0.9900** | **1.0000** |
+| Δ | **+0.0250** | **+0.0200** |
+
+**Adoption bar MET**: rerank does NOT drop MRR@5 below the no-rerank baseline
+— it improves both metrics (2 queries whose rank-1 was a near-miss were
+rescued by deep relevance). Gate `rerank_ir_gate` also PASSes against the
+fixed thresholds (MRR@5 0.99 ≥ 0.90, Recall@5 1.00 ≥ 0.93).
+
+**Decision: keep, but default OFF.** The quality gain (+2.5pt MRR@5) is real,
+but the measured cost is **~3.5 s per query** (568M-param cross-encoder on 10
+candidates) — a deliberate, per-query opt-in trade, never a default. The
+capability stays available for experimentation and for agents that ask for it
+explicitly.
+

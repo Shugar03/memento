@@ -57,7 +57,7 @@ use crate::audit::AuditLogger;
 use memento_domain::{DomainError, TenantContext};
 use memento_lancedb::LanceStore;
 use memento_parse::chunk::Chunker;
-use memento_ports::{EmbedPort, KnowledgePort, ParsePort};
+use memento_ports::{EmbedPort, KnowledgePort, ParsePort, RerankPort};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -166,6 +166,10 @@ pub struct AppService {
     store: Arc<LanceStore>,
     parse: Arc<dyn ParsePort>,
     embedder: Option<Arc<dyn EmbedPort>>,
+    /// Cross-encoder reranker (A1): an optional retrieval post-processor.
+    /// `None` when no surface attached a reranker; even when attached, the
+    /// capability gate (`MEMENTO_RERANK=1`) lives on the port itself.
+    reranker: Option<Arc<dyn RerankPort>>,
     chunker: Arc<Chunker>,
     clock: Arc<dyn Clock>,
     audit: AuditLogger,
@@ -220,6 +224,7 @@ impl AppService {
             store: Arc::new(store),
             parse,
             embedder,
+            reranker: None,
             chunker: Arc::new(chunker),
             clock,
             audit,
@@ -268,6 +273,17 @@ impl AppService {
     /// The storage root this service is bound to.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Attach a cross-encoder reranker (A1). Surfaces that want the rerank
+    /// capability call this right after `open`; the reranker is `None` by
+    /// default so every other caller keeps the pre-rerank behavior. The
+    /// per-query opt-in (`SearchQuery.rerank`) decides whether a search pays
+    /// the inference cost; the port's own `is_enabled()` (`MEMENTO_RERANK`)
+    /// is the capability gate.
+    pub fn with_reranker(mut self, reranker: Arc<dyn RerankPort>) -> Self {
+        self.reranker = Some(reranker);
+        self
     }
 
     /// The bound store (adapter-level access for advanced use cases).

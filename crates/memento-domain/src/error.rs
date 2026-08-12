@@ -18,7 +18,7 @@
 //! validation      | 2, 14, 15
 //! duplicate       | 3
 //! auth            | 4, 10, 11
-//! io / parse      | 5, 6, 7
+//! io / parse      | 5, 6, 7, 18
 //! backup          | 8, 9, 17
 //! quota           | 12, 13, 16
 //! not found       | 20, 21
@@ -63,6 +63,8 @@ pub const CODE_IO: &str = "IO";
 pub const CODE_PARSE: &str = "PARSE";
 /// Stable machine-readable code: model inference error.
 pub const CODE_EMBEDDING_FAILED: &str = "EMBEDDING_FAILED";
+/// Stable machine-readable code: cross-encoder rerank failure.
+pub const CODE_RERANK_FAILED: &str = "RERANK_FAILED";
 /// Stable machine-readable code: backup checksum/decrypt failed (REQ-ML-005).
 pub const CODE_BACKUP_CORRUPT: &str = "BACKUP_CORRUPT";
 /// Stable machine-readable code: backup schema version mismatch.
@@ -132,6 +134,9 @@ pub enum DomainError {
     /// Model inference error.
     #[error("embedding failed: {message}")]
     EmbeddingFailed { message: String },
+    /// Cross-encoder rerank error (A1).
+    #[error("rerank failed: {message}")]
+    RerankFailed { message: String },
     /// Backup checksum/decrypt failed.
     #[error("backup is corrupt: {reason}")]
     BackupCorrupt { reason: String },
@@ -170,6 +175,7 @@ impl DomainError {
             DomainError::Io { .. } => CODE_IO,
             DomainError::Parse { .. } => CODE_PARSE,
             DomainError::EmbeddingFailed { .. } => CODE_EMBEDDING_FAILED,
+            DomainError::RerankFailed { .. } => CODE_RERANK_FAILED,
             DomainError::BackupCorrupt { .. } => CODE_BACKUP_CORRUPT,
             DomainError::BackupVersion { .. } => CODE_BACKUP_VERSION,
             DomainError::SubprocessTimeout { .. } => CODE_SUBPROCESS_TIMEOUT,
@@ -189,6 +195,7 @@ impl DomainError {
             DomainError::Io { .. } => 5,
             DomainError::Parse { .. } => 6,
             DomainError::EmbeddingFailed { .. } => 7,
+            DomainError::RerankFailed { .. } => 18,
             DomainError::BackupCorrupt { .. } => 8,
             DomainError::BackupVersion { .. } => 9,
             DomainError::TenantRequired => 10,
@@ -276,6 +283,9 @@ mod tests {
                 message: "corrupt".into(),
             },
             DomainError::EmbeddingFailed {
+                message: "onnx".into(),
+            },
+            DomainError::RerankFailed {
                 message: "onnx".into(),
             },
             DomainError::BackupCorrupt {
@@ -385,6 +395,12 @@ mod tests {
                 "EMBEDDING_FAILED",
             ),
             (
+                DomainError::RerankFailed {
+                    message: String::new(),
+                },
+                "RERANK_FAILED",
+            ),
+            (
                 DomainError::BackupCorrupt {
                     reason: String::new(),
                 },
@@ -469,6 +485,12 @@ mod tests {
                     message: String::new(),
                 },
                 7,
+            ),
+            (
+                DomainError::RerankFailed {
+                    message: String::new(),
+                },
+                18,
             ),
             (
                 DomainError::BackupCorrupt {

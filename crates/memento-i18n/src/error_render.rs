@@ -24,6 +24,7 @@ fn error_key(err: &DomainError) -> StringKey {
         DomainError::Io { .. } => StringKey::ErrIo,
         DomainError::Parse { .. } => StringKey::ErrParse,
         DomainError::EmbeddingFailed { .. } => StringKey::ErrEmbeddingFailed,
+        DomainError::RerankFailed { .. } => StringKey::ErrRerankFailed,
         DomainError::BackupCorrupt { .. } => StringKey::ErrBackupCorrupt,
         DomainError::BackupVersion { .. } => StringKey::ErrBackupVersion,
         DomainError::SubprocessTimeout { .. } => StringKey::ErrSubprocessTimeout,

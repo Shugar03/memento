@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use memento_application::{AppService, SystemClock};
 use memento_domain::{DomainError, TenantContext};
-use memento_embed_fastembed::{FastEmbedEmbedder, ModelLoader};
+use memento_embed_fastembed::{FastEmbedEmbedder, FastReranker, ModelLoader, Reranker};
 use memento_parse::ParseService;
 use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
-use memento_ports::{EmbedPort, ParsePort};
+use memento_ports::{EmbedPort, ParsePort, RerankPort};
 use memento_tenant::TenantResolverImpl;
 
 /// Everything a CLI command needs after startup.
@@ -52,6 +52,16 @@ pub fn embedder_for(root: &Path, no_embeddings: bool) -> Option<Arc<dyn EmbedPor
             ModelLoader::new(root.join("models"), true),
         ))))
     }
+}
+
+/// The cross-encoder reranker for this root (A1): lazy model load behind the
+/// `MEMENTO_RERANK` capability toggle — the loader itself is created always
+/// (cheap), the ~543 MB int8 model only loads on the first rerank call and
+/// only when the env toggle is set.
+pub fn reranker_for(root: &Path) -> Arc<dyn RerankPort> {
+    Arc::new(FastReranker::new(Arc::new(Reranker::new(
+        root.to_path_buf(),
+    ))))
 }
 
 /// The parse boundary: `ParseService::auto` when anydoc resolves, else a
@@ -90,7 +100,10 @@ pub async fn open(root: &Path, no_embeddings: bool) -> Result<CliApp, DomainErro
     let ctx = resolver.resolve_from_env()?;
     let parse = parse_boundary(root);
     let embedder = embedder_for(root, no_embeddings);
-    let app = AppService::open(&ctx, root, parse, embedder.clone(), Arc::new(SystemClock)).await?;
+    let reranker = reranker_for(root);
+    let app = AppService::open(&ctx, root, parse, embedder.clone(), Arc::new(SystemClock))
+        .await?
+        .with_reranker(reranker);
     Ok(CliApp {
         app: Arc::new(app),
         ctx,

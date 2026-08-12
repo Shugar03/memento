@@ -111,6 +111,13 @@ fn rrf_k_arg(i18n: &I18n) -> Arg {
         .help(i18n.t(StringKey::CliHelpRrfKArg))
 }
 
+fn rerank_flag(i18n: &I18n) -> Arg {
+    Arg::new("rerank")
+        .long("rerank")
+        .action(ArgAction::SetTrue)
+        .help(i18n.t(StringKey::CliHelpRerankArg))
+}
+
 // ---- tenant ----------------------------------------------------------------
 
 fn tenant_cmd(i18n: &I18n) -> Command {
@@ -214,6 +221,7 @@ fn search_cmd(i18n: &I18n) -> Command {
         .arg(workspace_arg(i18n))
         .arg(rrf_flag(i18n))
         .arg(rrf_k_arg(i18n))
+        .arg(rerank_flag(i18n))
         .arg(
             Arg::new("doc-id")
                 .long("doc-id")

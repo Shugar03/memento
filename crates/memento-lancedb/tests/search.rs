@@ -263,6 +263,7 @@ async fn hybrid_flag_errors_until_application_layer() {
         workspace_id: ws,
         rrf_enabled: true,
         rrf_k: DEFAULT_RRF_K,
+        rerank: false,
         filters: None,
     };
     let err = SearchPort::search(&store, &ts.ctx(), q)

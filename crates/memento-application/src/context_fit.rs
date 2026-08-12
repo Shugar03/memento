@@ -108,6 +108,7 @@ impl AppService {
                     workspace_id: req.workspace_id,
                     rrf_enabled: req.rrf_enabled,
                     rrf_k: req.rrf_k,
+                    rerank: false,
                     filters: None,
                 },
             )

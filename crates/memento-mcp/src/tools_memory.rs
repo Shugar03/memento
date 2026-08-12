@@ -154,6 +154,12 @@ struct SearchParams {
     /// RRF fusion constant k (hybrid only). Defaults to the standard 60.
     #[serde(default)]
     rrf_k: Option<f32>,
+    /// Cross-encoder rerank of the fused top-10 (A1, hybrid only): reorders
+    /// candidates by deep relevance and returns the top-5. Requires the
+    /// reranker capability (MEMENTO_RERANK=1); otherwise the fused order is
+    /// kept. Off by default.
+    #[serde(default)]
+    rerank: bool,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -235,6 +241,7 @@ impl McpServer {
                     workspace_id,
                     rrf_enabled: p.rrf_enabled,
                     rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
+                    rerank: p.rerank,
                     filters: None,
                 },
             )
