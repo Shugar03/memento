@@ -10,6 +10,7 @@ members = [
     "crates/memento-okf",
     "crates/memento-tenant",
     "crates/memento-application",
+    "crates/memento-observability",
     "crates/memento-mcp",
     "crates/memento-cli",
     "crates/memento-worker",
@@ -87,7 +88,13 @@ thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 metrics = "0.24"
-metrics-exporter-prometheus = "0.18"
+# default-features = false: the exporter's defaults pull hyper (HTTP listener);
+# observability must never bind a port (REQ-OBS-007, threat-model). The builder's
+# install_recorder/render are core and remain available (design D2).
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+# Pinned at apply time (0.3x latest): the SystemProbe trait isolates API churn
+# (design D1/D6).
+sysinfo = "0.39"
 # --- CLI / MCP ---
 clap = { version = "4.6", features = ["derive"] }
 # `client` feature: in-process MCP client for memento-mcp's boundary tests

@@ -1,0 +1,24 @@
+[package]
+name = "memento-observability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS observability infrastructure: env-gated tracing subscribers, lazy Prometheus metrics, best-effort JSONL events, and a gated process sampler."
+
+# Sits below application (design D1): application and adapters consume it, it
+# depends only on memento-domain. Every capability is OFF by default and
+# env-gated (REQ-OBS-004: zero I/O/allocations when off).
+[dependencies]
+memento-domain = { path = "../memento-domain" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+sysinfo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
