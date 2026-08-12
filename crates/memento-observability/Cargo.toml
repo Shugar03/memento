@@ -22,3 +22,15 @@ tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# test-util: tokio::time::advance + start_paused for the deterministic
+# fake-clock sampler loop test (S0.7). Dev-only feature; the library build
+# keeps the workspace `full` feature set.
+tokio = { workspace = true, features = ["test-util"] }
+
+# Windows thread count for the sampler probe (S0.8): sysinfo 0.39's
+# Process::tasks() is linux-only — cfg'd to None everywhere else (sysinfo
+# 0.39.6 common/system.rs). Toolhelp is the same snapshot API sysinfo uses
+# for processes. 0.61 resolves to the copy already in Cargo.lock via
+# sysinfo — no extra build.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
