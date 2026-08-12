@@ -21,3 +21,5 @@ pub mod events;
 pub mod metrics;
 pub mod sampler;
 pub mod tracing;
+
+pub use events::{EventRecord, EventSink};
