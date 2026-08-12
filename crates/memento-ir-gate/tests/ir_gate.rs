@@ -17,7 +17,7 @@ use memento_domain::{DomainError, SourceKind};
 use memento_embed_fastembed::{FastEmbedEmbedder, ModelLoader};
 use memento_ir_gate::{CORPUS_DIR, GoldenQuery, is_relevant, load_golden_set, mrr_at_5};
 use memento_ports::{
-    EmbedPort, IngestTextRequest, Metadata, ParsePort, ParsedDocument, SearchQuery,
+    DEFAULT_RRF_K, EmbedPort, IngestTextRequest, Metadata, ParsePort, ParsedDocument, SearchQuery,
 };
 use memento_testkit::{StubEmbedPort, TempStore};
 use std::path::{Path, PathBuf};
@@ -109,6 +109,108 @@ async fn ingest_corpus(app: &AppService, ts: &TempStore) {
     }
 }
 
+/// Run every golden query through the RRF hybrid path at `rrf_k` and return
+/// the aggregate (MRR@5, Recall@5). The query-embed cache makes repeated k
+/// sweeps cheap: each distinct query text embeds exactly once.
+async fn score_golden(
+    app: &AppService,
+    ts: &TempStore,
+    rrf_k: f32,
+    print_rows: bool,
+) -> (f32, f32) {
+    let golden: Vec<GoldenQuery> = load_golden_set();
+    let mut total_mrr = 0.0f32;
+    let mut recall_hits = 0u32;
+
+    for q in &golden {
+        let mut query = SearchQuery::new(q.query.clone(), 5, *ts.workspace_id());
+        query.rrf_enabled = true;
+        query.rrf_k = rrf_k;
+        let hits = app
+            .search(&ts.ctx(), query)
+            .await
+            .expect("golden query search must succeed");
+        let texts: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+        let mrr = mrr_at_5(&texts, &q.expected_fragments);
+        let in_top5 = texts
+            .iter()
+            .take(5)
+            .any(|t| is_relevant(t, &q.expected_fragments));
+        total_mrr += mrr;
+        recall_hits += u32::from(in_top5);
+        if print_rows {
+            println!(
+                "{:<10} {:<58} MRR={:.3} top5={}",
+                q.id, q.query, mrr, in_top5
+            );
+        }
+    }
+
+    let n = golden.len() as f32;
+    (total_mrr / n, recall_hits as f32 / n)
+}
+
+/// MRR@5 / Recall@5 sweep over RRF fusion constants. Manual run (not CI):
+///
+/// ```sh
+/// cargo test -p memento-ir-gate --test ir_gate rrf_k_sweep -- --ignored --nocapture
+/// MEMENTO_IR_GATE=1 cargo test -p memento-ir-gate --test ir_gate rrf_k_sweep -- --ignored --nocapture
+/// ```
+///
+/// Sweeps `[30, 60, 100, 150]` (or `RRF_K_SWEEP=45,75` comma-separated overrides)
+/// and prints the evidence table. The real int8 model (`MEMENTO_IR_GATE=1`) is
+/// the source of truth for Spanish tuning.
+#[tokio::test]
+#[ignore = "manual sweep: rrf_k_sweep -- --ignored --nocapture"]
+async fn rrf_k_sweep() {
+    let real = std::env::var_os("MEMENTO_IR_GATE").is_some();
+    let ts = TempStore::new();
+
+    let embedder: Arc<dyn EmbedPort> = if real {
+        real_embedder()
+    } else {
+        Arc::new(StubEmbedPort::default())
+    };
+
+    let app = AppService::open(
+        &ts.ctx(),
+        ts.root(),
+        Arc::new(NeverParse),
+        Some(embedder),
+        Arc::new(SystemClock),
+    )
+    .await
+    .expect("open app service");
+
+    ingest_corpus(&app, &ts).await;
+
+    let mut ks = vec![30.0f32, 60.0, 100.0, 150.0];
+    if let Ok(raw) = std::env::var("RRF_K_SWEEP") {
+        ks = raw
+            .split(',')
+            .map(|s| {
+                s.trim()
+                    .parse()
+                    .expect("RRF_K_SWEEP must be comma-separated floats")
+            })
+            .collect();
+    }
+    // RRF_SWEEP_ROWS=1 prints every (query, MRR, top5) row per k.
+    let rows = std::env::var_os("RRF_SWEEP_ROWS").is_some();
+
+    let n = load_golden_set().len();
+    println!(
+        "\n[ir-gate-sweep] mode={} queries={} rrf-k sweep",
+        if real { "int8" } else { "stub" },
+        n
+    );
+    println!("{:<8} {:<10} {:<10}", "rrf_k", "MRR@5", "Recall@5");
+    for k in &ks {
+        let (mrr5, recall5) = score_golden(&app, &ts, *k, rows).await;
+        println!("{:<8.0} {:<10.4} {:<10.4}", k, mrr5, recall5);
+    }
+}
+
 #[tokio::test]
 async fn ir_gate() {
     let real = std::env::var_os("MEMENTO_IR_GATE").is_some();
@@ -133,33 +235,7 @@ async fn ir_gate() {
     ingest_corpus(&app, &ts).await;
 
     let golden: Vec<GoldenQuery> = load_golden_set();
-    let mut total_mrr = 0.0f32;
-    let mut recall_hits = 0u32;
-
-    for q in &golden {
-        let mut query = SearchQuery::new(q.query.clone(), 5, *ts.workspace_id());
-        query.rrf_enabled = true;
-        let hits = app
-            .search(&ts.ctx(), query)
-            .await
-            .expect("golden query search must succeed");
-        let texts: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
-        let mrr = mrr_at_5(&texts, &q.expected_fragments);
-        let in_top5 = texts
-            .iter()
-            .take(5)
-            .any(|t| is_relevant(t, &q.expected_fragments));
-        total_mrr += mrr;
-        recall_hits += u32::from(in_top5);
-        println!(
-            "{:<10} {:<58} MRR={:.3} top5={}",
-            q.id, q.query, mrr, in_top5
-        );
-    }
-
-    let n = golden.len() as f32;
-    let mrr5 = total_mrr / n;
-    let recall5 = recall_hits as f32 / n;
+    let (mrr5, recall5) = score_golden(&app, &ts, DEFAULT_RRF_K, true).await;
     let (mrr_thr, recall_thr) = if real {
         (memento_ir_gate::REAL_MRR5, memento_ir_gate::REAL_RECALL5)
     } else {

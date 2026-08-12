@@ -151,6 +151,9 @@ struct SearchParams {
     top_k: usize,
     #[serde(default)]
     rrf_enabled: bool,
+    /// RRF fusion constant k (hybrid only). Defaults to the standard 60.
+    #[serde(default)]
+    rrf_k: Option<f32>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -204,6 +207,9 @@ struct ContextFitParams {
     top_k: usize,
     #[serde(default)]
     rrf_enabled: bool,
+    /// RRF fusion constant k (hybrid only). Defaults to the standard 60.
+    #[serde(default)]
+    rrf_k: Option<f32>,
 }
 
 // ---------- the tools ------------------------------------------------------
@@ -228,6 +234,7 @@ impl McpServer {
                     top_k: top_k_or_default(p.top_k),
                     workspace_id,
                     rrf_enabled: p.rrf_enabled,
+                    rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
                     filters: None,
                 },
             )
@@ -401,6 +408,7 @@ impl McpServer {
                     workspace_id,
                     top_k: top_k_or_default(p.top_k),
                     rrf_enabled: p.rrf_enabled,
+                    rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
                 },
             )
             .await?;

@@ -19,7 +19,7 @@ pub use ingest::{IngestDocumentRequest, IngestPort, IngestResult, IngestTextRequ
 pub use knowledge::{KnowledgePort, ProjectOverview};
 pub use lifecycle::{DeleteReport, DeleteScope, LifecyclePort, SweepReport};
 pub use parse::{ParsePort, ParsedDocument};
-pub use search::{SearchFilters, SearchHit, SearchPort, SearchQuery};
+pub use search::{DEFAULT_RRF_K, SearchFilters, SearchHit, SearchPort, SearchQuery};
 pub use tenant_resolver::TenantResolver;
 
 #[cfg(test)]
@@ -44,6 +44,7 @@ mod tests {
         assert_eq!(q.query, "hola mundo");
         assert_eq!(q.top_k, 5);
         assert!(!q.rrf_enabled, "RRF must default to off (REQ-MR-002)");
+        assert_eq!(q.rrf_k, search::DEFAULT_RRF_K, "RRF k defaults to 60");
         assert!(q.filters.is_none());
 
         // Type-level proof: the only constructor takes a WorkspaceId by value;

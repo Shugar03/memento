@@ -20,7 +20,7 @@
 use crate::AppService;
 use memento_domain::{DomainError, TenantContext, WorkspaceId};
 use memento_lancedb::feedback_for_chunk;
-use memento_ports::{SearchHit, SearchQuery};
+use memento_ports::{DEFAULT_RRF_K, SearchHit, SearchQuery};
 use serde::{Deserialize, Serialize};
 
 /// Input to `AppService::context_fit`.
@@ -34,6 +34,13 @@ pub struct ContextFitRequest {
     pub top_k: usize,
     /// Candidate retrieval mode (RRF hybrid behind the same toggle).
     pub rrf_enabled: bool,
+    /// RRF fusion constant k (hybrid mode only). Defaults to the standard 60.
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: f32,
+}
+
+fn default_rrf_k() -> f32 {
+    DEFAULT_RRF_K
 }
 
 impl ContextFitRequest {
@@ -50,6 +57,7 @@ impl ContextFitRequest {
             top_k,
             workspace_id,
             rrf_enabled: false,
+            rrf_k: DEFAULT_RRF_K,
         }
     }
 }
@@ -99,6 +107,7 @@ impl AppService {
                     top_k: req.top_k,
                     workspace_id: req.workspace_id,
                     rrf_enabled: req.rrf_enabled,
+                    rrf_k: req.rrf_k,
                     filters: None,
                 },
             )

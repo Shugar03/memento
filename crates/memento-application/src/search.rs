@@ -10,8 +10,9 @@
 //!   embed the query text), so this layer composes the vector leg
 //!   ([`memento_lancedb::vector_search`]) with the FTS leg
 //!   ([`memento_lancedb::full_text_search`]), fuses both ranked lists with
-//!   RRF ([`memento_lancedb::rrf_fuse`], k=60) and materializes the top-k
-//!   hits. No re-index is involved: vectors exist from day 1 (REQ-MC-004).
+//!   RRF ([`memento_lancedb::rrf_fuse`], default k=60, per-query override via
+//!   `SearchQuery.rrf_k`) and materializes the top-k hits. No re-index is
+//!   involved: vectors exist from day 1 (REQ-MC-004).
 //!
 //! # `--no-embeddings` (REQ-MR-003)
 //!
@@ -26,9 +27,6 @@ use memento_ports::{SearchFilters, SearchHit, SearchPort, SearchQuery};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-
-/// RRF fusion constant (standard k=60; discovery + design: rank-based sum).
-const RRF_K: f32 = 60.0;
 
 /// Fast content hash for the query embed cache (B1). Same DefaultHasher /
 /// SipHash as `hash_text` in `memento_embed_fastembed::model` (edit C);
@@ -94,7 +92,7 @@ impl AppService {
         .await?;
         let fts_leg: Vec<(ChunkId, f32)> = fts_hits.iter().map(|h| (h.chunk_id, h.score)).collect();
 
-        let fused = rrf_fuse(&vec_leg, &fts_leg, RRF_K);
+        let fused = rrf_fuse(&vec_leg, &fts_leg, query.rrf_k);
         let scores: HashMap<ChunkId, f32> = fused.iter().copied().collect();
         let ids: Vec<ChunkId> = fused.iter().take(query.top_k).map(|(id, _)| *id).collect();
 
@@ -177,7 +175,7 @@ mod tests {
     use super::*;
     use crate::test_util::{other_workspace_ctx, test_app, test_app_no_embed};
     use memento_domain::DocId;
-    use memento_ports::{IngestTextRequest, SearchFilters};
+    use memento_ports::{DEFAULT_RRF_K, IngestTextRequest, SearchFilters};
     use memento_testkit::{TempStore, TestClock, spanish_corpus};
     use std::sync::{Arc, Mutex};
 
@@ -262,6 +260,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rrf_k_threads_into_fusion() {
+        // A per-query rrf_k must reach the fusion: a smaller k yields strictly
+        // higher fused scores on the same hits (1/(k+rank) is decreasing in k).
+        let ts = TempStore::new();
+        let app = corpus_app(&ts).await;
+        let mut q_small = SearchQuery::new("memoria río", 10, *ts.workspace_id());
+        q_small.rrf_enabled = true;
+        q_small.rrf_k = 30.0;
+        let mut q_large = q_small.clone();
+        q_large.rrf_k = 1e6;
+
+        let small = app.search(&ts.ctx(), q_small).await.expect("k=30 ok");
+        let large = app.search(&ts.ctx(), q_large).await.expect("k=1e6 ok");
+        assert!(!small.is_empty(), "fused results exist");
+        let large_by_id: HashMap<ChunkId, f32> =
+            large.iter().map(|h| (h.chunk_id, h.score)).collect();
+        for hit in &small {
+            let big = large_by_id.get(&hit.chunk_id).copied().unwrap_or(0.0);
+            assert!(
+                hit.score > big,
+                "k=30 score {} must exceed k=1e6 {} on chunk {}",
+                hit.score,
+                big,
+                hit.chunk_id
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn hybrid_without_embeddings_is_structured_error() {
         // REQ-MR-003: --no-embeddings + explicit hybrid → structured error.
         let ts = TempStore::new();
@@ -299,6 +326,7 @@ mod tests {
                     top_k: 10,
                     workspace_id: *ts.workspace_id(),
                     rrf_enabled: false,
+                    rrf_k: DEFAULT_RRF_K,
                     filters: Some(SearchFilters {
                         doc_id: Some(doc_a),
                         source: None,
@@ -320,6 +348,7 @@ mod tests {
                     top_k: 10,
                     workspace_id: *ts.workspace_id(),
                     rrf_enabled: true,
+                    rrf_k: DEFAULT_RRF_K,
                     filters: Some(SearchFilters {
                         doc_id: Some(doc_a),
                         source: None,
@@ -350,6 +379,7 @@ mod tests {
                         top_k: 10,
                         workspace_id: *other_ws.workspace_id(),
                         rrf_enabled: rrf,
+                        rrf_k: DEFAULT_RRF_K,
                         filters: None,
                     },
                 )

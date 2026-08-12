@@ -20,6 +20,15 @@ pub struct SearchFilters {
     pub source: Option<SourceKind>,
 }
 
+/// Standard RRF fusion constant (k=60, Cormack et al.): scores flatten as k
+/// grows, so lower k weights high ranks more. Spanish-tuned value may differ
+/// from the English-centric default (see fix/rrf-bm25-es-tuning).
+pub const DEFAULT_RRF_K: f32 = 60.0;
+
+fn default_rrf_k() -> f32 {
+    DEFAULT_RRF_K
+}
+
 /// A search request. The workspace is mandatory (REQ-MR-006): the caller must
 /// always say which workspace to search.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,17 +39,23 @@ pub struct SearchQuery {
     /// Hybrid retrieval (vector + FTS fused with RRF); off by default
     /// (REQ-MR-002/003).
     pub rrf_enabled: bool,
+    /// RRF fusion constant k (hybrid mode only). Defaults to the standard 60;
+    /// per-query override for Spanish tuning.
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: f32,
     pub filters: Option<SearchFilters>,
 }
 
 impl SearchQuery {
-    /// Build a query. `rrf_enabled` defaults to `false`, filters to `None`.
+    /// Build a query. `rrf_enabled` defaults to `false`, `rrf_k` to the
+    /// standard 60, filters to `None`.
     pub fn new(query: impl Into<String>, top_k: usize, workspace_id: WorkspaceId) -> Self {
         Self {
             query: query.into(),
             top_k,
             workspace_id,
             rrf_enabled: false,
+            rrf_k: DEFAULT_RRF_K,
             filters: None,
         }
     }

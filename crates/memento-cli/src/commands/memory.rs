@@ -19,6 +19,23 @@ use crate::commands::confirm_ceremony;
 use crate::output::{emit_json, emit_json_value};
 use crate::startup::CliApp;
 
+/// Parse the `--rrf-k` fusion constant (defaults to the standard 60).
+fn parse_rrf_k(m: &ArgMatches) -> Result<f32, DomainError> {
+    let raw = m
+        .get_one::<String>("rrf-k")
+        .expect("clap: default")
+        .parse::<f32>()
+        .map_err(|_| DomainError::InvalidInput {
+            message: "--rrf-k must be a number".into(),
+        })?;
+    if !raw.is_finite() || raw <= 0.0 {
+        return Err(DomainError::InvalidInput {
+            message: "--rrf-k must be a positive finite number".into(),
+        });
+    }
+    Ok(raw)
+}
+
 /// `search <query> [--top-k N] [--workspace <uuid>] [--rrf] [--doc-id]
 /// [--source ...]` (REQ-MR-001/002/003/006).
 pub async fn run_search(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
@@ -32,6 +49,7 @@ pub async fn run_search(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError>
         })?;
     let workspace = workspace_of(m, app)?;
     let filters = filters_of(m)?;
+    let rrf_k = parse_rrf_k(m)?;
 
     let hits = app
         .app
@@ -42,6 +60,7 @@ pub async fn run_search(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError>
                 top_k,
                 workspace_id: workspace,
                 rrf_enabled: m.get_flag("rrf"),
+                rrf_k,
                 filters,
             },
         )
@@ -186,6 +205,7 @@ pub async fn run_context_fit(m: &ArgMatches, app: &CliApp) -> Result<(), DomainE
                 top_k,
                 workspace_id: workspace_of(m, app)?,
                 rrf_enabled: m.get_flag("rrf"),
+                rrf_k: parse_rrf_k(m)?,
             },
         )
         .await?;

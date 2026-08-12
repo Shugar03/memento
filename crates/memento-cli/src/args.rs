@@ -103,6 +103,14 @@ fn rrf_flag(i18n: &I18n) -> Arg {
         .help(i18n.t(StringKey::CliHelpRrfArg))
 }
 
+fn rrf_k_arg(i18n: &I18n) -> Arg {
+    Arg::new("rrf-k")
+        .long("rrf-k")
+        .value_name("K")
+        .default_value("60")
+        .help(i18n.t(StringKey::CliHelpRrfKArg))
+}
+
 // ---- tenant ----------------------------------------------------------------
 
 fn tenant_cmd(i18n: &I18n) -> Command {
@@ -205,6 +213,7 @@ fn search_cmd(i18n: &I18n) -> Command {
         .arg(top_k_arg(i18n))
         .arg(workspace_arg(i18n))
         .arg(rrf_flag(i18n))
+        .arg(rrf_k_arg(i18n))
         .arg(
             Arg::new("doc-id")
                 .long("doc-id")
@@ -312,6 +321,7 @@ fn context_fit_cmd(i18n: &I18n) -> Command {
         .arg(top_k_arg(i18n))
         .arg(workspace_arg(i18n))
         .arg(rrf_flag(i18n))
+        .arg(rrf_k_arg(i18n))
 }
 
 // ---- code ------------------------------------------------------------------

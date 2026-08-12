@@ -101,6 +101,7 @@ pub enum StringKey {
     CliHelpTopKArg,
     CliHelpWorkspaceArg,
     CliHelpRrfArg,
+    CliHelpRrfKArg,
     CliHelpNameArg,
     CliHelpDaysArg,
     CliHelpChunkArg,
@@ -122,7 +123,7 @@ pub enum StringKey {
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 86] = [
+    pub const ALL: [StringKey; 87] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -192,6 +193,7 @@ impl StringKey {
         StringKey::CliHelpTopKArg,
         StringKey::CliHelpWorkspaceArg,
         StringKey::CliHelpRrfArg,
+        StringKey::CliHelpRrfKArg,
         StringKey::CliHelpNameArg,
         StringKey::CliHelpDaysArg,
         StringKey::CliHelpChunkArg,
@@ -328,6 +330,7 @@ pub fn es(key: StringKey) -> &'static str {
         StringKey::CliHelpTopKArg => "Cantidad de resultados (máx. 100).",
         StringKey::CliHelpWorkspaceArg => "Workspace (por defecto el del tenant).",
         StringKey::CliHelpRrfArg => "Búsqueda híbrida con RRF.",
+        StringKey::CliHelpRrfKArg => "Constante k de fusión RRF (híbrido; por defecto 60).",
         StringKey::CliHelpNameArg => "Nombre del tenant.",
         StringKey::CliHelpDaysArg => "Días de retención (0 desactiva).",
         StringKey::CliHelpChunkArg => "Id del fragmento.",
@@ -454,6 +457,7 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpTopKArg => "Result count (max 100).",
         StringKey::CliHelpWorkspaceArg => "Workspace (defaults to the tenant's).",
         StringKey::CliHelpRrfArg => "Hybrid search with RRF.",
+        StringKey::CliHelpRrfKArg => "RRF fusion constant k (hybrid; default 60).",
         StringKey::CliHelpNameArg => "Tenant name.",
         StringKey::CliHelpDaysArg => "Retention days (0 disables).",
         StringKey::CliHelpChunkArg => "Chunk id.",
