@@ -45,6 +45,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --all
 
+  # IR golden-set gate (item 4, C1): runs the MRR@5/Recall@5 regression suite
+  # against the REAL int8 MultilingualE5Base model so any PR that degrades
+  # retrieval quality fails. The fast `test` job above runs the same gate in
+  # stub mode (deterministic, no model download); this job flips
+  # MEMENTO_IR_GATE=1 to enforce the strict thresholds.
+  ir-gate:
+    name: ir-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache int8 model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/int8/multilingual-e5-base-int8
+          key: memento-e5base-int8-v0.0.3
+      - name: Provision int8 model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install --quiet onnxruntime huggingface_hub
+          python crates/memento-ir-gate/scripts/provision_int8.py
+      - name: Run IR gate (real model)
+        env:
+          MEMENTO_IR_GATE: "1"
+        run: cargo test -p memento-ir-gate --test ir_gate
+
   bench-compile:
     name: bench-compile
     runs-on: ubuntu-latest

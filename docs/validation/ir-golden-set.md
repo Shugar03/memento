@@ -108,3 +108,17 @@ Added 8 synthetic domain docs (+69 chunks): Rust systems engineering, GDPR/priva
 **Decision: keep dynamic int8.** After the artifact cleanup, both FP32 and dynamic int8 score a perfect 1.0000 MRR@5 / 1.00 Recall@5 on the broader corpus (the previous −0.036 drop was driven by two artifact-stolen rank-1s; they were cleanup artifacts, not quantization loss). Static int8 quantizes *activations*, which degrades the E5 mean-pooled embedding space so badly that RRF MRR@5 collapses to 0.66–0.72 — and its QDQ graph runs *hotter* (1708 MB) than dynamic (1081 MB). Static fails both axes of the adoption rule (MRR ≥ dynamic AND RAM < dynamic); Recall@5 stays ≥ 0.93 in every variant.
 
 Static model (rejected) left at `models\int8\multilingual-e5-base-static-int8\` (git-ignored) for reference; scripts in `F:\target\tmp\memento-ir\` (`quant_static_e5base.py`, `run_golden_broad.py`).
+
+## Committed CI gate (item 4, C1+C2 — 2026-08-11)
+
+The golden set moved from a manual Python script into the repo as a **deterministic Rust CI gate**: crate `crates/memento-ir-gate/`.
+
+- **Corpus**: 16 synthetic fixture docs (`crates/memento-ir-gate/tests/fixtures/ir-corpus/`) — authors' fictional content, no real PDFs, 234–439 words each. Covering EN marketing, EN technical/code, ES technical, ES legal/administrative and mixed/bilingual styles.
+- **Golden set**: 50 queries (`tests/golden-set.json`): 15 EN literal, 12 ES paraphrase (the weak spot), 12 ES→ES, 6 code, 5 conversational. Each query lists `expected_fragments` that must occur verbatim (NFD-folded) in the corpus — enforced by a consistency test so fragments can't silently drift.
+- **Scoring**: RRF hybrid (`top_k = 5`), keyword-substring relevance with NFD accent folding — same proxy semantics as the Python script.
+- **Modes / thresholds**:
+  - Stub (`cargo test` default): deterministic `StubEmbedPort`, **MRR@5 ≥ 0.70, Recall@5 ≥ 0.90**. Stub embeddings are token-hash vectors that cannot do semantic/cross-lingual matching, so this is a pipeline smoke test (measured baseline MRR ≈ 0.79 / Recall ≈ 0.96).
+  - Real (`MEMENTO_IR_GATE=1`): the shipped int8 model, **MRR@5 ≥ 0.90, Recall@5 ≥ 0.93** (measured **0.949 / 0.980**). Fails loudly if the int8 file is missing.
+- **CI**: `.github/workflows/ci.yml` `ir-gate` job provisions the int8 model (`scripts/provision_int8.py`, HF FP32 download + dynamic QInt8 quantize, cached) and runs `cargo test -p memento-ir-gate --test ir_gate` with `MEMENTO_IR_GATE=1`. The fast `test` job runs the same gate in stub mode.
+- **Extending**: add a fixture doc, add a query whose `expected_fragments` are substrings of that doc, keep thresholds only as high as the real model actually achieves.
+

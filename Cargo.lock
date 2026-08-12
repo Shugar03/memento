@@ -4225,6 +4225,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "memento-ir-gate"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "memento-application",
+ "memento-domain",
+ "memento-embed-fastembed",
+ "memento-ports",
+ "memento-testkit",
+ "serde",
+ "serde_json",
+ "tokio",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "memento-lancedb"
 version = "0.1.0"
 dependencies = [

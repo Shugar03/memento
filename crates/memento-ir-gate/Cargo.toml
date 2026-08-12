@@ -1,0 +1,23 @@
+[package]
+name = "memento-ir-gate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "IR golden-set CI gate: MRR@5/Recall@5 regression tests over a deterministic synthetic corpus."
+publish = false
+
+# The gate is deliberately light: it reuses the workspace's application +
+# testkit crates and adds no third-party dependencies beyond serde/tokio
+# (already in the tree) plus `unicode-normalization` (workspace dep) for the
+# NFD accent folding of the relevance proxy.
+[dependencies]
+memento-application = { path = "../memento-application" }
+memento-domain = { path = "../memento-domain", features = ["testkit"] }
+memento-ports = { path = "../memento-ports" }
+memento-testkit = { path = "../memento-testkit" }
+memento-embed-fastembed = { path = "../memento-embed-fastembed" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+unicode-normalization.workspace = true
