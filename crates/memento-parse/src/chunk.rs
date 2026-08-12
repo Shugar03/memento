@@ -162,9 +162,12 @@ impl Chunker {
         Self::from_bytes(SPANISH_TOKENIZER_JSON)
     }
 
-    /// Split text into chunks (deterministic for identical input).
-    /// Empty or whitespace-only text yields an empty vector.
-    pub fn chunk(&self, text: &str) -> Vec<Chunk> {
+    /// Split text into chunks lazily (B2): the returned iterator yields each
+    /// `Chunk` on demand — the expensive tokenizer probes run inside
+    /// `Iterator::next`, so a producer task can stream chunks to a consumer
+    /// that embeds them concurrently. Deterministic for identical input;
+    /// identical output to [`Chunker::chunk`] for the same input.
+    pub fn chunk_iter<'a>(&'a self, text: &'a str) -> impl Iterator<Item = Chunk> + 'a {
         self.splitter
             .chunk_indices(text)
             .map(|(start, chunk_text)| Chunk {
@@ -172,7 +175,12 @@ impl Chunker {
                 start,
                 end: start + chunk_text.len(),
             })
-            .collect()
+    }
+
+    /// Split text into chunks (deterministic for identical input).
+    /// Empty or whitespace-only text yields an empty vector.
+    pub fn chunk(&self, text: &str) -> Vec<Chunk> {
+        self.chunk_iter(text).collect()
     }
 
     /// Token count of `text` using the chunker's own tokenizer

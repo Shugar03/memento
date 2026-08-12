@@ -10,6 +10,16 @@
 //!   → docs row (idempotency key) → audit
 //! ```
 //!
+//! # Async pipeline (B2)
+//!
+//! The chunk → embed tail is pipelined: text-splitter's lazy `chunk_indices`
+//! iterator streams chunks from a blocking-pool producer into a bounded
+//! `tokio::sync::mpsc` channel (depth 16), while the embed consumer runs ONNX
+//! batches of 64 on the calling task. The two expensive stages overlap
+//! instead of serializing (chunk tokenization is CPU-bound; embedding is
+//! async inference). Writes still land in ONE `table.add()` call, so the
+//! atomic-visibility contract (REQ-MC-007) is unchanged.
+//!
 //! # Idempotency (REQ-MC-005)
 //!
 //! The dedup probe hashes the RAW INPUT (`sha256(tenant ‖ NUL ‖ content)`),
@@ -26,7 +36,7 @@
 //! the ingest still succeeded and only the dedup probe for that doc degrades
 //! (traced loudly).
 
-use crate::{AppService, MAX_BLOB_BYTES, MAX_CHUNKS_PER_DOC, embedding_model_version};
+use crate::{AppService, EMBED_BATCH, MAX_BLOB_BYTES, MAX_CHUNKS_PER_DOC, embedding_model_version};
 use memento_domain::{
     ChoreId, ChunkId, DocId, DomainError, MemoryChunk, Provenance, SourceKind, TenantContext,
 };
@@ -36,6 +46,22 @@ use memento_lancedb::{
 use memento_parse::chunk::MAX_TOKENS;
 use memento_ports::{IngestDocumentRequest, IngestResult, IngestTextRequest};
 use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+/// Bounded in-flight buffer between the chunk producer and the embed
+/// consumer (B2). The embedder processes one 64-chunk ONNX batch at a time
+/// while the chunker tokenizes ahead on the blocking pool; 16 keeps the
+/// chunker ahead across batch boundaries without buffering a whole document.
+const PIPELINE_BUFFER: usize = 16;
+
+/// One chunk produced by the pipeline's chunk stage: the id is assigned at
+/// production time so ordering and provenance stay deterministic while
+/// embedding runs asynchronously ahead of the chunker.
+struct PipelineChunk {
+    id: ChunkId,
+    text: String,
+}
 
 /// Pre-chunk quota guard (REQ-MC-007, design MC Q4).
 ///
@@ -102,20 +128,9 @@ impl AppService {
         let title = title_of(req.metadata.as_ref());
         let created_at = self.clock.now();
 
-        // Quota pre-check BEFORE the splitter (see `over_chunk_quota`).
-        if over_chunk_quota(self, &req.text) {
-            return Err(DomainError::QuotaExceeded {
-                message: format!(
-                    "ingest would produce more than {MAX_CHUNKS_PER_DOC} chunks \
-                     ({MAX_CHUNKS_PER_DOC} x {MAX_TOKENS} token limit)"
-                ),
-            });
-        }
-        let chunks = self.chunker.chunk(&req.text);
-
         self.stage_chunks(
             ctx,
-            &chunks.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            req.text,
             StageSpec {
                 doc_id,
                 source: SourceKind::Text,
@@ -193,20 +208,9 @@ impl AppService {
         let title = title_of(req.metadata.as_ref());
         let created_at = self.clock.now();
 
-        // Quota pre-check BEFORE the splitter (see `over_chunk_quota`).
-        if over_chunk_quota(self, &parsed.markdown) {
-            return Err(DomainError::QuotaExceeded {
-                message: format!(
-                    "document would produce more than {MAX_CHUNKS_PER_DOC} chunks \
-                     ({MAX_CHUNKS_PER_DOC} x {MAX_TOKENS} token limit)"
-                ),
-            });
-        }
-        let chunks = self.chunker.chunk(&parsed.markdown);
-
         self.stage_chunks(
             ctx,
-            &chunks.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            parsed.markdown,
             StageSpec {
                 doc_id,
                 source: parsed.source_kind,
@@ -219,65 +223,85 @@ impl AppService {
         .await
     }
 
-    /// The shared pipeline tail: chunk-count check → embed (batch 64) →
-    /// single atomic batch add → docs row → audit (REQ-MC-007).
+    /// The shared pipeline tail (B2): chunk-count pre-check → pipelined
+    /// chunk → embed (batch 64) → single atomic batch add → docs row →
+    /// audit (REQ-MC-007).
+    ///
+    /// The chunk stage streams lazily from a blocking-pool producer into a
+    /// bounded [`mpsc`] channel (depth [`PIPELINE_BUFFER`]); the embed stage
+    /// consumes batches of [`EMBED_BATCH`] on the calling task, so ONNX
+    /// inference overlaps with the tokenizer work of the producer. Writes
+    /// still happen in ONE `add_chunks_batch` call — atomic visibility is
+    /// unchanged — and every fallible stage fails the whole ingest with
+    /// zero writes.
     ///
     /// The spec bundles everything the staged write needs besides the
-    /// chunked texts themselves (keeps the signature at 4 args).
+    /// normalized text itself (keeps the signature at 3 args).
     async fn stage_chunks(
         &self,
         ctx: &TenantContext,
-        texts: &[String],
+        markdown: String,
         spec: StageSpec,
     ) -> Result<IngestResult, DomainError> {
-        let StageSpec {
-            doc_id,
-            source,
-            title,
-            content_hash,
-            created_at,
-            chore_id,
-        } = spec;
-        if texts.len() > MAX_CHUNKS_PER_DOC {
+        // Quota pre-check BEFORE the splitter (see `over_chunk_quota`).
+        if over_chunk_quota(self, &markdown) {
             return Err(DomainError::QuotaExceeded {
                 message: format!(
-                    "ingest produced {} chunks, limit is {MAX_CHUNKS_PER_DOC}",
-                    texts.len()
+                    "ingest would produce more than {MAX_CHUNKS_PER_DOC} chunks \
+                     ({MAX_CHUNKS_PER_DOC} x {MAX_TOKENS} token limit)"
                 ),
             });
         }
 
-        let vectors = self.embed_batch(texts).await?;
-
-        let chunks: Vec<MemoryChunk> = texts
-            .iter()
-            .zip(vectors)
-            .map(|(text, vector)| {
-                let id = ChunkId::new();
-                MemoryChunk {
-                    id,
-                    tenant_id: *ctx.tenant_id(),
-                    workspace_id: *ctx.workspace_id(),
-                    agent_id: ctx.agent_id().clone(),
-                    doc_id,
-                    text: text.clone(),
-                    vector,
-                    created_at,
-                    // REQ-MC-006: complete provenance at write, matching the
-                    // execution context.
-                    provenance: Provenance {
-                        source: source.clone(),
-                        doc_id,
-                        chunk_id: id,
-                        created_at,
-                        embedding_model_version: embedding_model_version().to_string(),
-                        tenant_id: *ctx.tenant_id(),
-                        workspace_id: *ctx.workspace_id(),
-                        agent_id: ctx.agent_id().clone(),
-                    },
+        // The chunk producer runs on the blocking pool: `chunk_iter` is a
+        // lazy iterator, so each tokenizer probe happens inside `next()` and
+        // chunks stream into the bounded channel while the embed consumer
+        // below awaits ONNX inference — the two expensive stages overlap
+        // instead of serializing.
+        let (tx, mut rx) = mpsc::channel::<PipelineChunk>(PIPELINE_BUFFER);
+        let chunker = Arc::clone(&self.chunker);
+        let producer = tokio::task::spawn_blocking(move || {
+            for chunk in chunker.chunk_iter(&markdown) {
+                if tx
+                    .blocking_send(PipelineChunk {
+                        id: ChunkId::new(),
+                        text: chunk.text,
+                    })
+                    .is_err()
+                {
+                    // Consumer dropped the channel (embed failure / quota
+                    // abort): stop producing; the failed send is the signal.
+                    return;
                 }
-            })
-            .collect();
+            }
+        });
+
+        let mut chunks: Vec<MemoryChunk> = Vec::new();
+        let mut pending: Vec<(ChunkId, String)> = Vec::with_capacity(EMBED_BATCH);
+        while let Some(chunk) = rx.recv().await {
+            // Hard chunk-count backstop (REQ-MC-007). The O(n) token
+            // pre-check above makes this unreachable in practice, but the
+            // pipeline must never write past the limit.
+            if chunks.len() + pending.len() >= MAX_CHUNKS_PER_DOC {
+                return Err(DomainError::QuotaExceeded {
+                    message: format!("ingest produced more than {MAX_CHUNKS_PER_DOC} chunks"),
+                });
+            }
+            pending.push((chunk.id, chunk.text));
+            if pending.len() == EMBED_BATCH {
+                chunks.extend(self.embed_and_build(ctx, &pending, &spec).await?);
+                pending.clear();
+            }
+        }
+        if !pending.is_empty() {
+            chunks.extend(self.embed_and_build(ctx, &pending, &spec).await?);
+        }
+
+        // The producer finished cleanly (channel closed after the last
+        // send). A panicked producer must not leave a partial write behind.
+        producer.await.map_err(|err| DomainError::Internal {
+            message: format!("chunk pipeline panicked: {err}"),
+        })?;
 
         // ONE add call → atomic visibility (REQ-MC-007).
         add_chunks_batch(&self.store, ctx, &chunks).await?;
@@ -285,17 +309,17 @@ impl AppService {
         // Idempotency key row — after the commit; a failure here degrades
         // the dedup probe for this doc only (see module docs).
         let doc = DocRecord {
-            doc_id,
+            doc_id: spec.doc_id,
             tenant_id: *ctx.tenant_id(),
             workspace_id: *ctx.workspace_id(),
             agent_id: ctx.agent_id().clone(),
-            title,
-            source: source.clone(),
-            created_at,
-            content_hash: content_hash.to_string(),
+            title: spec.title.clone(),
+            source: spec.source.clone(),
+            created_at: spec.created_at,
+            content_hash: spec.content_hash.to_string(),
         };
         if let Err(err) = upsert_doc(&self.store, ctx, &doc).await {
-            tracing::error!(%err, doc = %doc_id,
+            tracing::error!(%err, doc = %spec.doc_id,
                 "docs row upsert failed; idempotency probe degraded for this doc");
         }
 
@@ -303,18 +327,63 @@ impl AppService {
             ctx,
             "ingest",
             json!({
-                "doc_id": doc_id,
+                "doc_id": spec.doc_id,
                 "chunks": chunks.len(),
                 "duplicate": false,
-                "source": source_label(&source),
+                "source": source_label(&spec.source),
             }),
-            Some(chore_id),
+            Some(spec.chore_id),
         );
         Ok(IngestResult {
             chunk_ids: chunks.iter().map(|c| c.id).collect(),
-            doc_id,
-            chore_id: Some(chore_id),
+            doc_id: spec.doc_id,
+            chore_id: Some(spec.chore_id),
         })
+    }
+
+    /// Embed one pipeline batch and build the [`MemoryChunk`] rows for it.
+    ///
+    /// Ids arrive pre-assigned from the producer, so batch alignment stays
+    /// deterministic even though embedding runs ahead of chunking. Under
+    /// `--no-embeddings` every chunk carries an explicitly absent vector
+    /// (REQ-MC-004) and the pipeline does not fail.
+    async fn embed_and_build(
+        &self,
+        ctx: &TenantContext,
+        pending: &[(ChunkId, String)],
+        spec: &StageSpec,
+    ) -> Result<Vec<MemoryChunk>, DomainError> {
+        let texts: Vec<String> = pending.iter().map(|(_, text)| text.clone()).collect();
+        let vectors = self.embed_batch(&texts).await?;
+        Ok(pending
+            .iter()
+            .zip(vectors)
+            .map(|((id, text), vector)| {
+                let id = *id;
+                MemoryChunk {
+                    id,
+                    tenant_id: *ctx.tenant_id(),
+                    workspace_id: *ctx.workspace_id(),
+                    agent_id: ctx.agent_id().clone(),
+                    doc_id: spec.doc_id,
+                    text: text.clone(),
+                    vector,
+                    created_at: spec.created_at,
+                    // REQ-MC-006: complete provenance at write, matching the
+                    // execution context.
+                    provenance: Provenance {
+                        source: spec.source.clone(),
+                        doc_id: spec.doc_id,
+                        chunk_id: id,
+                        created_at: spec.created_at,
+                        embedding_model_version: embedding_model_version().to_string(),
+                        tenant_id: *ctx.tenant_id(),
+                        workspace_id: *ctx.workspace_id(),
+                        agent_id: ctx.agent_id().clone(),
+                    },
+                }
+            })
+            .collect())
     }
 }
 
@@ -728,5 +797,41 @@ mod tests {
         assert_eq!(value["target"]["duplicate"], false);
         // Content never enters the audit: the ingested text is absent.
         assert!(!raw.contains("auditoría"), "no content in audit: {raw}");
+    }
+
+    #[tokio::test]
+    async fn pipeline_streams_chunks_without_loss_or_reordering() {
+        // B2: the chunk → embed pipeline must reproduce the exact chunker
+        // output — deterministic boundaries, production order preserved —
+        // for a document large enough to span several embed batches.
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let sentence = "la memoria es un río subterráneo que nunca deja de fluir. ";
+        let text = sentence.repeat(2_000);
+        let expected = app.chunker.chunk(&text);
+        assert!(expected.len() > 64, "fixture spans embed batches");
+
+        let result = app
+            .ingest_text(&ts.ctx(), text_request(&text))
+            .await
+            .expect("ingest ok");
+        assert_eq!(result.chunk_ids.len(), expected.len());
+
+        let mut actual: Vec<String> = Vec::with_capacity(expected.len());
+        for id in &result.chunk_ids {
+            let chunk = app
+                .store()
+                .get_chunk(&ts.ctx(), id)
+                .await
+                .expect("read")
+                .expect("exists");
+            actual.push(chunk.text);
+        }
+        let expected_texts: Vec<String> = expected.iter().map(|c| c.text.clone()).collect();
+        assert_eq!(
+            actual, expected_texts,
+            "streaming chunking is deterministic and ordered"
+        );
     }
 }
