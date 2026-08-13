@@ -76,7 +76,8 @@ impl EventSink {
 
     /// The events file path for this tenant.
     pub fn log_path(&self) -> PathBuf {
-        self.log_dir.join(format!("{}.events.jsonl", self.tenant_id))
+        self.log_dir
+            .join(format!("{}.events.jsonl", self.tenant_id))
     }
 
     /// The tenant this sink is bound to (the sampler stamps it).
@@ -118,8 +119,14 @@ mod tests {
     use memento_domain::{AgentId, ChoreId, DomainError, TenantId};
     use serde_json::json;
 
-    fn record_for(tid: TenantId, action: &str, target: serde_json::Value, outcome: &'static str,
-                  error_code: Option<&'static str>, chore_id: Option<ChoreId>) -> EventRecord {
+    fn record_for(
+        tid: TenantId,
+        action: &str,
+        target: serde_json::Value,
+        outcome: &'static str,
+        error_code: Option<&'static str>,
+        chore_id: Option<ChoreId>,
+    ) -> EventRecord {
         EventRecord {
             ts: chrono::Utc::now(),
             tenant_id: tid,
@@ -183,7 +190,10 @@ mod tests {
         assert_eq!(lines[1]["action"], "context_fit");
         assert_eq!(lines[1]["outcome"], "error");
         assert_eq!(lines[1]["error_code"], "NOT_FOUND");
-        assert!(lines[1]["chore_id"].is_null(), "chore_id omitted as null when None");
+        assert!(
+            lines[1]["chore_id"].is_null(),
+            "chore_id omitted as null when None"
+        );
     }
 
     #[test]
@@ -192,10 +202,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let tid = TenantId::new();
         let a = EventSink::tenant(dir.path(), &tid).expect("a");
-        a.record(&record_for(tid, "search", json!({"hits": 1}), "ok", None, None));
+        a.record(&record_for(
+            tid,
+            "search",
+            json!({"hits": 1}),
+            "ok",
+            None,
+            None,
+        ));
 
         let b = EventSink::tenant(dir.path(), &tid).expect("b");
-        b.record(&record_for(tid, "cache_evict", json!({"entries": 3}), "ok", None, None));
+        b.record(&record_for(
+            tid,
+            "cache_evict",
+            json!({"entries": 3}),
+            "ok",
+            None,
+            None,
+        ));
 
         let raw = std::fs::read_to_string(a.log_path()).expect("events file");
         assert_eq!(raw.lines().count(), 2, "appends, never truncates");
@@ -225,7 +249,10 @@ mod tests {
         let line: serde_json::Value = serde_json::from_str(raw.trim()).expect("JSON line");
         assert_eq!(line["action"], "sample");
         assert_eq!(line["target"]["rss_bytes"], 42);
-        assert!(line["agent_id"].is_null(), "absent agent stays null, never faked");
+        assert!(
+            line["agent_id"].is_null(),
+            "absent agent stays null, never faked"
+        );
     }
 
     #[test]
@@ -246,7 +273,14 @@ mod tests {
         std::fs::set_permissions(sink.log_path(), perms).expect("readonly");
 
         // The data op keeps working (no panic, no error — API is infallible).
-        sink.record(&record_for(tid, "search", json!({"hits": 0}), "ok", None, None));
+        sink.record(&record_for(
+            tid,
+            "search",
+            json!({"hits": 0}),
+            "ok",
+            None,
+            None,
+        ));
 
         // A fresh sink on the unwritable file fails with a typed error.
         match EventSink::tenant(dir.path(), &tid) {

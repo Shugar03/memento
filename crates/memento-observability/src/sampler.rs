@@ -95,7 +95,7 @@ fn process_thread_count(_system: &sysinfo::System, pid: sysinfo::Pid) -> u32 {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
 
     // SAFETY: Toolhelp snapshot API. The handle is closed on every path and
@@ -208,7 +208,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use super::{Clock, Sampler, SampleData, SystemClock, SystemProbe, SysinfoProbe};
+    use super::{Clock, SampleData, Sampler, SysinfoProbe, SystemClock, SystemProbe};
 
     /// Fixed-data probe (fake: no sysinfo involved).
     #[derive(Debug, Clone, Copy)]
@@ -254,10 +254,16 @@ mod tests {
     #[test]
     fn fixed_probe_reports_its_sample() {
         // The probe abstraction hands a fixed sample up unchanged.
-        let probe = FixedProbe(SampleData { rss_bytes: 1234, thread_count: 7 });
+        let probe = FixedProbe(SampleData {
+            rss_bytes: 1234,
+            thread_count: 7,
+        });
         assert_eq!(
             probe.sample(),
-            SampleData { rss_bytes: 1234, thread_count: 7 }
+            SampleData {
+                rss_bytes: 1234,
+                thread_count: 7
+            }
         );
     }
 
@@ -296,7 +302,10 @@ mod tests {
         let sampler = Sampler::new(
             Duration::from_secs(30),
             Arc::new(FakeClock::new(Duration::ZERO)),
-            Arc::new(FixedProbe(SampleData { rss_bytes: 9876, thread_count: 3 })),
+            Arc::new(FixedProbe(SampleData {
+                rss_bytes: 9876,
+                thread_count: 3,
+            })),
             sink,
         );
 
@@ -308,7 +317,10 @@ mod tests {
         assert_eq!(line["target"]["thread_count"], 3);
         assert_eq!(line["tenant_id"], tid.to_string());
         assert_eq!(line["outcome"], "ok");
-        assert!(line["agent_id"].is_null(), "no agent id faked for worker events");
+        assert!(
+            line["agent_id"].is_null(),
+            "no agent id faked for worker events"
+        );
     }
 
     #[tokio::test]
@@ -322,7 +334,10 @@ mod tests {
         let sampler = Sampler::new(
             Duration::from_secs(30),
             Arc::new(FakeClock::new(Duration::ZERO)),
-            Arc::new(FixedProbe(SampleData { rss_bytes: 0, thread_count: 0 })),
+            Arc::new(FixedProbe(SampleData {
+                rss_bytes: 0,
+                thread_count: 0,
+            })),
             sink,
         );
 
@@ -346,7 +361,10 @@ mod tests {
         let sampler = Arc::new(Sampler::new(
             Duration::from_millis(100),
             Arc::new(clock.clone()),
-            Arc::new(FixedProbe(SampleData { rss_bytes: 1, thread_count: 1 })),
+            Arc::new(FixedProbe(SampleData {
+                rss_bytes: 1,
+                thread_count: 1,
+            })),
             sink,
         ));
 
@@ -355,7 +373,11 @@ mod tests {
         // First poll: now(0) < interval → no sample yet.
         tokio::time::advance(Sampler::POLL_STEP).await;
         tokio::task::yield_now().await;
-        assert_eq!(event_count(&path), 0, "no sample before the first interval elapses");
+        assert_eq!(
+            event_count(&path),
+            0,
+            "no sample before the first interval elapses"
+        );
 
         // Advance past one interval → exactly one sample.
         clock.advance(Duration::from_millis(150));
@@ -367,7 +389,11 @@ mod tests {
         clock.advance(Duration::from_millis(200));
         tokio::time::advance(Sampler::POLL_STEP).await;
         tokio::task::yield_now().await;
-        assert_eq!(event_count(&path), 2, "second sample after the second interval");
+        assert_eq!(
+            event_count(&path),
+            2,
+            "second sample after the second interval"
+        );
 
         task.abort();
     }

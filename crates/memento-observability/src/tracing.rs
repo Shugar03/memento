@@ -65,8 +65,8 @@ pub const WORKER_DEFAULT_FILTER: &str = "info";
 /// unset). Installation is best-effort: a process installs its subscriber
 /// exactly once at startup; if one is already set, we keep the first.
 fn install(format: LogFormat, default_filter: &str) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
     let _ = match format {
         LogFormat::Json => tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -101,7 +101,10 @@ pub fn init_worker_subscriber() {
 
 #[cfg(test)]
 mod tests {
-    use super::{cli_gate, resolve_format, LogFormat, CLI_DEFAULT_FILTER, MCP_DEFAULT_FILTER, WORKER_DEFAULT_FILTER};
+    use super::{
+        CLI_DEFAULT_FILTER, LogFormat, MCP_DEFAULT_FILTER, WORKER_DEFAULT_FILTER, cli_gate,
+        resolve_format,
+    };
 
     #[test]
     fn format_defaults_to_pretty() {
@@ -152,4 +155,3 @@ mod tests {
         assert_eq!(WORKER_DEFAULT_FILTER, "info");
     }
 }
-

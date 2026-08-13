@@ -62,23 +62,23 @@ async fn main() -> ExitCode {
 
 fn parse_args() -> Result<StartupOptions, String> {
     let mut root: Option<PathBuf> = std::env::var("MEMENTO_ROOT").ok().map(PathBuf::from);
-    let mut staging_dir: Option<PathBuf> = std::env::var("MEMENTO_STAGING_DIR")
-        .ok()
-        .map(PathBuf::from);
+    let mut staging_dir: Option<PathBuf> =
+        std::env::var("MEMENTO_STAGING_DIR").ok().map(PathBuf::from);
     let mut no_embeddings = matches!(
         std::env::var("MEMENTO_NO_EMBEDDINGS").as_deref(),
         Ok("1" | "true" | "yes")
     );
-    let mut locale: Option<Locale> = std::env::var("MEMENTO_LOCALE")
-        .ok()
-        .and_then(|v| match v.as_str() {
-            "es" => Some(Locale::Es),
-            "en" => Some(Locale::En),
-            other => {
-                eprintln!("memento-mcp-server: unknown locale '{other}', ignoring");
-                None
-            }
-        });
+    let mut locale: Option<Locale> =
+        std::env::var("MEMENTO_LOCALE")
+            .ok()
+            .and_then(|v| match v.as_str() {
+                "es" => Some(Locale::Es),
+                "en" => Some(Locale::En),
+                other => {
+                    eprintln!("memento-mcp-server: unknown locale '{other}', ignoring");
+                    None
+                }
+            });
 
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
