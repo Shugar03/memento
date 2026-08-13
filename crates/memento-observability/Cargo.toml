@@ -1,0 +1,36 @@
+[package]
+name = "memento-observability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memento RS observability infrastructure: env-gated tracing subscribers, lazy Prometheus metrics, best-effort JSONL events, and a gated process sampler."
+
+# Sits below application (design D1): application and adapters consume it, it
+# depends only on memento-domain. Every capability is OFF by default and
+# env-gated (REQ-OBS-004: zero I/O/allocations when off).
+[dependencies]
+memento-domain = { path = "../memento-domain" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+sysinfo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# test-util: tokio::time::advance + start_paused for the deterministic
+# fake-clock sampler loop test (S0.7). Dev-only feature; the library build
+# keeps the workspace `full` feature set.
+tokio = { workspace = true, features = ["test-util"] }
+
+# Windows thread count for the sampler probe (S0.8): sysinfo 0.39's
+# Process::tasks() is linux-only — cfg'd to None everywhere else (sysinfo
+# 0.39.6 common/system.rs). Toolhelp is the same snapshot API sysinfo uses
+# for processes. 0.61 resolves to the copy already in Cargo.lock via
+# sysinfo — no extra build.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
