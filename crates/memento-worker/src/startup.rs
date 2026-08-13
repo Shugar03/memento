@@ -15,11 +15,14 @@
 //!   degradation note does not apply: there is no document surface here).
 
 use memento_application::AppService;
-use memento_domain::{DomainError, SourceKind, TenantContext};
+use memento_domain::{DomainError, SourceKind, TenantContext, TenantId};
+use memento_observability::EventSink;
+use memento_observability::sampler::{Clock as SamplerClock, Sampler, SystemProbe};
 use memento_ports::{ParsePort, ParsedDocument};
 use memento_tenant::TenantResolverImpl;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Everything the worker needs after startup.
 pub struct WorkerContext {
@@ -70,4 +73,40 @@ pub async fn open(root: &Path) -> Result<WorkerContext, DomainError> {
         ctx,
         root: root.to_path_buf(),
     })
+}
+
+/// Build the gated process sampler for the worker's bound tenant
+/// (REQ-OBS-011, design D6).
+///
+/// Reads `MEMENTO_OBSERVE_SAMPLES`: returns `Some(Sampler)` only when the
+/// var is exactly `"1"`, `None` otherwise (default off — zero I/O while
+/// off). The events land in the bound tenant's file (`logs/<tid>.events.jsonl`)
+/// via the same best-effort [`EventSink`] the application uses. The clock
+/// and probe are injected (the real impls are `SystemClock`/`SysinfoProbe`),
+/// so the worker never touches sysinfo directly — the [`SystemProbe`] trait
+/// isolates that API churn (D6).
+///
+/// The sampler is worker-only by construction: the CLI and MCP entrypoints
+/// never call this function.
+pub fn build_sampler(
+    root: &Path,
+    tenant: &TenantId,
+    interval: Duration,
+    clock: Arc<dyn SamplerClock>,
+    probe: Arc<dyn SystemProbe>,
+) -> Option<Sampler> {
+    if std::env::var("MEMENTO_OBSERVE_SAMPLES").ok().as_deref() != Some("1") {
+        return None;
+    }
+    // Best-effort, same contract as the application's event sink: an
+    // unwritable events file disables the sampler with a warn — it never
+    // fails the worker startup.
+    let sink = match EventSink::tenant(root, tenant) {
+        Ok(sink) => sink,
+        Err(err) => {
+            tracing::warn!(%err, "sampler requested but the tenant events file could not be opened; disabled");
+            return None;
+        }
+    };
+    Some(Sampler::new(interval, clock, probe, sink))
 }

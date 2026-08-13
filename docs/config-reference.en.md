@@ -50,6 +50,12 @@ Optional. In its absence the defaults are:
 | `MEMENTO_BENCH_LOC` | bench | `10000` (10k), `100000` (100k) | Code-index bench corpus size. |
 | `MEMENTO_BENCH_EMBED` | bench | `0` | If `1`, force the embed bench to run. |
 | `RUST_LOG` | all | `info` | tracing filter. |
+| `MEMENTO_LOG` | `memento` | `0` | `1` = enable the CLI tracing subscriber on stderr (REQ-OBS-001). |
+| `MEMENTO_LOG_FORMAT` | all | `pretty` | `pretty` or `json` for the CLI/MCP/worker subscribers (REQ-OBS-002). |
+| `MEMENTO_METRICS` | all | `0` | `1` = record Prometheus counters/histograms in memory; no HTTP listener ever bound (REQ-OBS-006/007). |
+| `MEMENTO_METRICS_FILE` | `memento` | stdout | Destination override for the `observability metrics` dump (REQ-OBS-007). |
+| `MEMENTO_EVENTS` | all | `0` | `1` = append operational events to `logs/<tid>.events.jsonl`; ids and counts only, never content, queries, or credentials (REQ-OBS-008/009). |
+| `MEMENTO_OBSERVE_SAMPLES` | `memento-worker` | `0` | `1` = sample RSS bytes + thread count every 30s into the bound tenant's events file (REQ-OBS-011). |
 
 `memento-worker` does **not** require `MEMENTO_TOKEN` or
 `MEMENTO_AGENT_ID` (operational identity, not tenant-bound).

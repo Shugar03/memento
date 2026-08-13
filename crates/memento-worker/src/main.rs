@@ -21,10 +21,11 @@
 use anyhow::Context;
 use clap::Parser;
 use memento_domain::DomainError;
+use memento_observability::sampler::{Sampler, SysinfoProbe, SystemClock as SamplerSystemClock};
 use memento_worker::backup_job::BackupJob;
 use memento_worker::maintenance::MaintenanceJob;
 use memento_worker::scheduler::{Clock, Scheduler, SystemClock};
-use memento_worker::startup::{WorkerContext, open};
+use memento_worker::startup::{WorkerContext, build_sampler, open};
 use memento_worker::sweep::SweepJob;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -148,6 +149,21 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let _signal = tokio::spawn(shutdown_signal(shutdown_tx));
+
+    // Gated process sampler (REQ-OBS-011, design D6): MEMENTO_OBSERVE_SAMPLES=1
+    // spawns RSS + thread-count sampling into the bound tenant's events file
+    // every 30s. Worker-only by construction — never wired in CLI or MCP.
+    if let Some(sampler) = build_sampler(
+        &root,
+        &ctx.ctx.tenant_id(),
+        Sampler::DEFAULT_INTERVAL,
+        Arc::new(SamplerSystemClock),
+        Arc::new(SysinfoProbe),
+    ) {
+        tracing::info!("sampler enabled (MEMENTO_OBSERVE_SAMPLES=1)");
+        tokio::spawn(Arc::new(sampler).run());
+    }
+
     scheduler.run_until_shutdown(shutdown_rx).await;
     Ok(())
 }

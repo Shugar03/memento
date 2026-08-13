@@ -12,7 +12,12 @@
 
 Memento RS is a **local-first multitenant memory engine** for AI agents.
 Every byte lives under `<root>/db/tenants/<tid>/` on the host's disk.
-There is no HTTP server, no telemetry, no third-party API at runtime.
+There is no HTTP server and no third-party API at runtime. Observability
+is opt-in and local-only (REQ-OBS-001..011): tracing writes to stderr,
+metrics are rendered by a CLI command (never an HTTP listener), and
+operational events append to `<root>/logs/<tid>.events.jsonl` — nothing
+leaves the machine, and labels/events carry ids and counts only, never
+chunk content, query text, or credentials.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐

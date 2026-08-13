@@ -107,6 +107,23 @@ queries to confirm the alignment improvement is preserved.
 | `lancedb` | `"0.33"`, default features | The `native-tls` feature no longer exists in lancedb ≥0.27 (removed upstream). MVP uses local file-based stores — TLS irrelevant; revisit if remote object stores are added. |
 | `multilingual-e5-base` **int8 (P2, opt-in)** | user-defined ONNX via `TextEmbedding::try_new_from_user_defined`, behind `MEMENTO_QUANTIZED_MODEL` env | MultilingualE5Base has NO quantized variant in the fastembed enum, so the ONNX is self-quantized with `onnxruntime.quantization.quantize_dynamic` (dynamic, `QuantType.QInt8`, no calibration — 2026-08-11, `F:\target\tmp\memento-ir\quantize_e5base.py`). File 1058.6 MB → 265.3 MB (−75%). Wired in `crates/memento-embed-fastembed/src/model.rs`: when the env var is set, `FastEmbedBackend::try_new` reads the onnx + tokenizer files (same directory) and commits from memory with `Pooling::Mean` and `MAX_EMBED_LEN`, identical graph I/O and dim (768). **Opt-in by design**: the stock FP32 enum path remains the default. Static int8 (QDQ, `quantize_static` MinMax/Entropy/Percentile, opset-17 bump required for `DequantizeLinear.axis`) was evaluated and **rejected** (2026-08-11): it quantizes activations, collapsing RRF MRR@5 to 0.66–0.72 on the broadened 14-query golden set vs 1.00 for FP32 and dynamic int8, and its QDQ graph runs hotter (1708 MB vs 1081 MB search peak). Dynamic int8 confirmed on a broadened corpus (638 chunks / 10 docs): FP32 1.0000 → dynamic int8 1.0000 MRR@5. Tokenizer files copied next to the onnx under `models/int8/` (git-ignored — not committed). Python `onnx` + `tokenizers` (calibration) packages required; `tokenizers` installed to `F:\target\tmp\py-deps` (C: full). |
 
+## memento-observability (2026-08-12, SDD "observability" change)
+
+New workspace crate `crates/memento-observability` (below `memento-application`,
+depends only on `memento-domain`) provides the four env-gated capabilities of
+the observability change: tracing subscribers on stderr (`MEMENTO_LOG` /
+`MEMENTO_LOG_FORMAT`), a lazy Prometheus registry (`MEMENTO_METRICS`, dumped by
+`memento observability metrics` — never an HTTP listener), best-effort JSONL
+operational events (`<root>/logs/<tid>.events.jsonl`, `MEMENTO_EVENTS`), and
+the gated process sampler (`MEMENTO_OBSERVE_SAMPLES`, worker only). Everything
+is OFF by default (REQ-OBS-001..011). New workspace dependencies it introduced:
+
+| Dependency | Choice | Why |
+|---|---|---|
+| `metrics-exporter-prometheus` | `"0.18"`, `default-features = false` | Default features pull `hyper` and an HTTP push/pull endpoint; observability is local-only by hard requirement (REQ-OBS-007 — no HTTP listener ever bound). `render()` emits Prometheus text for the CLI dump. Gate-verified compiling AND running on `x86_64-pc-windows-gnu` (19 pure-Rust transitive deps, no hyper). |
+| `sysinfo` | `"0.39"` (workspace pin) | Sampler probe (REQ-OBS-011), pure Rust. Isolated behind the `SystemProbe` trait (design D6) because `Process::tasks()` is linux-only — Windows thread counts use the same Toolhelp snapshot API via `windows-sys` below. |
+| `windows-sys` | `"0.61"`, features `Win32_Foundation` + `Win32_System_Diagnostics_ToolHelp` | Windows thread count for the sampler probe. Already in `Cargo.lock` via sysinfo — zero additional build. |
+
 ## Environment note (Windows local builds)
 
 The bootstrap host has no MSVC Build Tools (and no free C: space for them), so
