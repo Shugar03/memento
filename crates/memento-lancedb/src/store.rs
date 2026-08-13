@@ -19,14 +19,21 @@ use memento_domain::{
     AgentId, ChunkId, DocId, DomainError, MemoryChunk, Provenance, SourceKind, TenantContext,
     TenantId, WorkspaceId,
 };
+use memento_observability::EventSink;
 use memento_ports::SearchHit;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// LanceDB storage adapter bound to one tenant directory.
 pub struct LanceStore {
     connection: Connection,
     root: PathBuf,
     tenant_id: TenantId,
+    /// The tenant's operational event sink (REQ-OBS-008, design D5): shared
+    /// with the application via `with_events` so adapter-side events
+    /// (`fts_build`) land in the same `logs/<tid>.events.jsonl` file.
+    /// `None` when events are off (zero I/O).
+    events: Option<Arc<EventSink>>,
 }
 
 impl std::fmt::Debug for LanceStore {
@@ -72,7 +79,23 @@ impl LanceStore {
             connection,
             root,
             tenant_id,
+            events: None,
         })
+    }
+
+    /// Attach the tenant's operational event sink (REQ-OBS-008, design D5):
+    /// adapter-side events (`fts_build`) then append to the SAME
+    /// `logs/<tid>.events.jsonl` as the application's events. The builder
+    /// keeps `open`'s signature unchanged, so existing callers and tests
+    /// stay green with `None`.
+    pub fn with_events(mut self, events: Option<Arc<EventSink>>) -> Self {
+        self.events = events;
+        self
+    }
+
+    /// The bound event sink, if any (the application shares it).
+    pub(crate) fn events(&self) -> Option<&Arc<EventSink>> {
+        self.events.as_ref()
     }
 
     /// The root directory this store was opened against.
