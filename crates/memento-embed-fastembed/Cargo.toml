@@ -15,9 +15,16 @@ fastembed.workspace = true
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }
 memento-domain = { path = "../memento-domain" }
 memento-ports = { path = "../memento-ports" }
+# metrics 0.24 macros are no-ops without a recorder: the embed cache
+# hit/miss counters and the FP32 fallback counter only cost atomics when
+# MEMENTO_METRICS=1 (REQ-OBS-006, design D2).
+metrics.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 memento-testkit = { path = "../memento-testkit" }
+# metrics::render() for the REQ-OBS-006 counter tests (own-process integration
+# binary keeps the process-global recorder deterministic).
+memento-observability = { path = "../memento-observability" }

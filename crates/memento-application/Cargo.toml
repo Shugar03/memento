@@ -11,6 +11,12 @@ memento-ports = { path = "../memento-ports" }
 memento-lancedb = { path = "../memento-lancedb" }
 memento-parse = { path = "../memento-parse" }
 memento-okf = { path = "../memento-okf" }
+# Lazy Prometheus metrics recorder + render (REQ-OBS-006/007, design D2):
+# AppService::open installs the recorder once when MEMENTO_METRICS=1.
+memento-observability = { path = "../memento-observability" }
+# metrics 0.24 macros are no-ops without a recorder — hot path = atomic
+# increments only when enabled (REQ-OBS-004/006).
+metrics.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 serde.workspace = true

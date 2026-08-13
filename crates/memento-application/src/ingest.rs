@@ -101,6 +101,13 @@ impl AppService {
         let span = crate::ingest_span(ctx, *ctx.workspace_id());
         let record_chore = span.clone();
         async {
+            // REQ-OBS-006: operation counter (labels carry ids only — no
+            // content or secrets; no-op without a recorder).
+            metrics::counter!(
+                "memento_ingest_requests_total",
+                "tenant_id" => ctx.tenant_id().to_string()
+            )
+            .increment(1);
             if req.text.trim().is_empty() {
                 return Err(DomainError::InvalidInput {
                     message: "ingest_text requires non-empty text".into(),
@@ -113,6 +120,13 @@ impl AppService {
             // Dedup probe (REQ-MC-005): identical content in this tenant already
             // ingested → reference the existing records, write nothing.
             if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
+                // REQ-OBS-006 "cache hit (dedup)": the content was ingested
+                // before — no chunk/embed/write work runs.
+                metrics::counter!(
+                    "memento_ingest_dedup_hits_total",
+                    "tenant_id" => ctx.tenant_id().to_string()
+                )
+                .increment(1);
                 let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
                 self.record_audit(
                     ctx,
@@ -174,6 +188,11 @@ impl AppService {
         let span = crate::ingest_span(ctx, *ctx.workspace_id());
         let record_chore = span.clone();
         async {
+            metrics::counter!(
+                "memento_ingest_requests_total",
+                "tenant_id" => ctx.tenant_id().to_string()
+            )
+            .increment(1);
             if req.blob.is_empty() {
                 return Err(DomainError::InvalidInput {
                     message: "ingest_document requires a non-empty blob".into(),
@@ -193,6 +212,11 @@ impl AppService {
 
             // Dedup probe on the raw blob (REQ-MC-005).
             if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
+                metrics::counter!(
+                    "memento_ingest_dedup_hits_total",
+                    "tenant_id" => ctx.tenant_id().to_string()
+                )
+                .increment(1);
                 let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
                 self.record_audit(
                     ctx,
@@ -263,6 +287,8 @@ impl AppService {
         markdown: String,
         spec: StageSpec,
     ) -> Result<IngestResult, DomainError> {
+        // REQ-OBS-006: pipeline latency (chunk → embed → single atomic write).
+        let started = std::time::Instant::now();
         // Quota pre-check BEFORE the splitter (see `over_chunk_quota`).
         if over_chunk_quota(self, &markdown) {
             return Err(DomainError::QuotaExceeded {
@@ -354,6 +380,18 @@ impl AppService {
             }),
             Some(spec.chore_id),
         );
+        // REQ-OBS-006: produced chunk count + pipeline latency (labeled by
+        // tenant id; no-op without a recorder).
+        metrics::counter!(
+            "memento_ingest_chunks_total",
+            "tenant_id" => ctx.tenant_id().to_string()
+        )
+        .increment(chunks.len() as u64);
+        metrics::histogram!(
+            "memento_ingest_duration_ms",
+            "tenant_id" => ctx.tenant_id().to_string()
+        )
+        .record(started.elapsed().as_secs_f64() * 1000.0);
         Ok(IngestResult {
             chunk_ids: chunks.iter().map(|c| c.id).collect(),
             doc_id: spec.doc_id,
@@ -853,5 +891,61 @@ mod tests {
             actual, expected_texts,
             "streaming chunking is deterministic and ordered"
         );
+    }
+
+    #[tokio::test]
+    async fn metrics_ingest_records_requests_chunks_dedup_and_duration() {
+        // REQ-OBS-006: with MEMENTO_METRICS=1 an ingest records its request
+        // counter, the produced chunk count, and the pipeline latency; a
+        // duplicate ingest records the dedup hit (REQ-MC-005) instead of
+        // re-running the pipeline.
+        let _guard = crate::test_util::METRICS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::set_var("MEMENTO_METRICS", "1") };
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let tenant = ts.tenant_id().to_string();
+        let text = spanish_corpus().join(" ");
+
+        app.ingest_text(&ts.ctx(), text_request(&text))
+            .await
+            .expect("ingest");
+        app.ingest_text(&ts.ctx(), text_request(&text))
+            .await
+            .expect("dedup");
+
+        let render = memento_observability::metrics::render();
+        assert!(
+            render.contains(&format!(
+                "memento_ingest_requests_total{{tenant_id=\"{tenant}\"}} 2"
+            )),
+            "both ingests recorded: {render}"
+        );
+        assert!(
+            render.contains(&format!(
+                "memento_ingest_dedup_hits_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "second ingest is a dedup hit: {render}"
+        );
+        assert!(
+            render.contains(&format!(
+                "memento_ingest_duration_ms_count{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "pipeline latency observed once (dedup skips the pipeline): {render}"
+        );
+        let chunks = crate::test_util::metric_value(
+            &render,
+            &format!("memento_ingest_chunks_total{{tenant_id=\"{tenant}\"}}"),
+        )
+        .expect("chunk-count line present");
+        assert!(
+            chunks >= 1,
+            "produced chunks counted (got {chunks}): {render}"
+        );
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::remove_var("MEMENTO_METRICS") };
     }
 }

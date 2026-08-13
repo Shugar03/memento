@@ -71,13 +71,23 @@ impl AppService {
                     "rerank applies to hybrid (rrf) searches only; ignoring for FTS-only query"
                 );
             }
-            if query.rrf_enabled {
+            // REQ-OBS-006: operation counter + latency histogram. Labeled by
+            // tenant id (no secrets in labels); the macros are no-ops without
+            // a recorder, so this costs atomics only when MEMENTO_METRICS=1.
+            let tenant = ctx.tenant_id().to_string();
+            metrics::counter!("memento_search_requests_total", "tenant_id" => tenant.clone())
+                .increment(1);
+            let started = std::time::Instant::now();
+            let result = if query.rrf_enabled {
                 self.hybrid_search(ctx, query).await
             } else {
                 // Default mode: BM25 only (REQ-MR-001/002). The port validates
                 // top_k and handles the empty-query no-match case.
                 self.store.search(ctx, query).await
-            }
+            };
+            metrics::histogram!("memento_search_duration_ms", "tenant_id" => tenant)
+                .record(started.elapsed().as_secs_f64() * 1000.0);
+            result
         }
         .instrument(span)
         .await
@@ -168,12 +178,24 @@ impl AppService {
             tracing::warn!(
                 "rerank requested but no reranker attached (MEMENTO_RERANK=1 enables it); keeping fused order"
             );
+            // REQ-OBS-006 fallbacks ("rerank-degraded"): the opt-in degrades
+            // without the capability — recorded, never silent.
+            metrics::counter!(
+                "memento_rerank_degraded_total",
+                "tenant_id" => self.store.tenant_id().to_string()
+            )
+            .increment(1);
             return Ok(hits);
         };
         if !reranker.is_enabled() {
             tracing::warn!(
                 "rerank requested but disabled (MEMENTO_RERANK=1 enables it); keeping fused order"
             );
+            metrics::counter!(
+                "memento_rerank_degraded_total",
+                "tenant_id" => self.store.tenant_id().to_string()
+            )
+            .increment(1);
             return Ok(hits);
         }
         let texts: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
@@ -195,6 +217,12 @@ impl AppService {
         for (hit, score) in hits.iter_mut().zip(scores) {
             hit.score = score;
         }
+        // REQ-OBS-006: a completed rerank operation (the capability fired).
+        metrics::counter!(
+            "memento_rerank_requests_total",
+            "tenant_id" => self.store.tenant_id().to_string()
+        )
+        .increment(1);
         // Deterministic final ranking: rerank score desc, id tiebreak.
         hits.sort_by(|a, b| {
             b.score
@@ -223,8 +251,20 @@ impl AppService {
 
         let key = hash_query(query);
         if let Some(vec) = self.query_embed_cache.get(key)? {
+            // REQ-OBS-006 "cache hit (query cache)": repeated query text
+            // reuses the cached vector (~0 ms, no ONNX inference).
+            metrics::counter!(
+                "memento_query_cache_hits_total",
+                "tenant_id" => self.store.tenant_id().to_string()
+            )
+            .increment(1);
             return Ok(vec);
         }
+        metrics::counter!(
+            "memento_query_cache_misses_total",
+            "tenant_id" => self.store.tenant_id().to_string()
+        )
+        .increment(1);
 
         let vectors = embedder.embed(&[query]).await?;
         let vec = vectors
@@ -883,5 +923,115 @@ mod tests {
             span.get("chore_id").is_none(),
             "chore_id omitted when absent (REQ-OBS-003): {span}"
         );
+    }
+
+    // ---- REQ-OBS-006: counters/histograms wiring ---------------------------
+
+    /// The test-wide metrics env guard: `MEMENTO_METRICS` is process-global,
+    /// so every metrics test holds the shared lock while mutating it.
+    fn metrics_guard() -> impl Drop {
+        crate::test_util::METRICS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[tokio::test]
+    async fn metrics_record_search_counter_and_latency_when_enabled() {
+        // REQ-OBS-006 scenario 1: with MEMENTO_METRICS=1 each completed
+        // search increments its counter and records a latency observation.
+        // Labeled by tenant id — unique per TempStore, so parallel tests
+        // never collide on the same series.
+        let _guard = metrics_guard();
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::set_var("MEMENTO_METRICS", "1") };
+        let ts = TempStore::new();
+        let app = corpus_app(&ts).await;
+        let tenant = ts.tenant_id().to_string();
+
+        let q = SearchQuery::new("memoria río", 10, *ts.workspace_id());
+        let hits = app.search(&ts.ctx(), q.clone()).await.expect("search ok");
+        assert!(!hits.is_empty(), "hits exist");
+        app.search(&ts.ctx(), q).await.expect("second search");
+
+        let render = memento_observability::metrics::render();
+        assert!(
+            render.contains(&format!(
+                "memento_search_requests_total{{tenant_id=\"{tenant}\"}} 2"
+            )),
+            "search counter per tenant: {render}"
+        );
+        assert!(
+            render.contains(&format!(
+                "memento_search_duration_ms_count{{tenant_id=\"{tenant}\"}} 2"
+            )),
+            "search latency histogram observed: {render}"
+        );
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::remove_var("MEMENTO_METRICS") };
+    }
+
+    #[tokio::test]
+    async fn metrics_query_cache_hits_and_misses_recorded() {
+        // REQ-OBS-006 "cache hit/miss (query cache)": the hybrid path embeds
+        // the query once (miss) and reuses the vector (hit) — both recorded.
+        let _guard = metrics_guard();
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::set_var("MEMENTO_METRICS", "1") };
+        let ts = TempStore::new();
+        let (app, _port) = app_with_counting_embed(&ts).await;
+        app.ingest_text(
+            &ts.ctx(),
+            text_request("La memoria es un río subterráneo que nunca deja de fluir."),
+        )
+        .await
+        .expect("doc a");
+        let mut q = SearchQuery::new("hipnotic headlines", 5, *ts.workspace_id());
+        q.rrf_enabled = true;
+        app.search(&ts.ctx(), q.clone()).await.expect("hybrid ok");
+        app.search(&ts.ctx(), q).await.expect("cached hybrid ok");
+
+        let render = memento_observability::metrics::render();
+        let tenant = ts.tenant_id().to_string();
+        assert!(
+            render.contains(&format!(
+                "memento_query_cache_misses_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "first query embedded (miss): {render}"
+        );
+        assert!(
+            render.contains(&format!(
+                "memento_query_cache_hits_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "repeated query reuses the vector (hit): {render}"
+        );
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::remove_var("MEMENTO_METRICS") };
+    }
+
+    #[tokio::test]
+    async fn metrics_rerank_degraded_recorded_without_capability() {
+        // REQ-OBS-006 fallbacks ("rerank-degraded"): rerank requested without
+        // the capability degrades to the fused order AND records the counter.
+        let _guard = metrics_guard();
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::set_var("MEMENTO_METRICS", "1") };
+        let ts = TempStore::new();
+        let app = corpus_app(&ts).await;
+        let mut q = SearchQuery::new("memoria río", 10, *ts.workspace_id());
+        q.rrf_enabled = true;
+        q.rerank = true;
+        let hits = app.search(&ts.ctx(), q).await.expect("degraded ok");
+        assert!(!hits.is_empty(), "results returned unchanged");
+
+        let render = memento_observability::metrics::render();
+        let tenant = ts.tenant_id().to_string();
+        assert!(
+            render.contains(&format!(
+                "memento_rerank_degraded_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "rerank-degraded fallback recorded: {render}"
+        );
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::remove_var("MEMENTO_METRICS") };
     }
 }
