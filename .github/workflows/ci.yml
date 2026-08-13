@@ -34,6 +34,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
@@ -43,6 +45,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo test --all
 
   # IR golden-set gate (item 4, C1): runs the MRR@5/Recall@5 regression suite
@@ -57,20 +61,36 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Cache int8 model
         id: model-cache
         uses: actions/cache@v4
         with:
           path: models/int8/multilingual-e5-base-int8
           key: memento-e5base-int8-v0.0.3
+      - name: Cache Linux ONNX Runtime
+        id: ort-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/onnxruntime-linux
+          key: memento-ort-linux-1.28.0
+      - name: Provision Linux ONNX Runtime
+        if: steps.ort-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --retry 5 -o /tmp/ort-linux.tgz \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz
+          mkdir -p vendor/onnxruntime-linux
+          tar -xzf /tmp/ort-linux.tgz -C vendor/onnxruntime-linux --strip-components=2 onnxruntime-linux-x64-1.28.0/lib
       - name: Provision int8 model
         if: steps.model-cache.outputs.cache-hit != 'true'
         run: |
-          pip install --quiet onnxruntime huggingface_hub
+          pip install --quiet onnxruntime huggingface_hub onnx
           python crates/memento-ir-gate/scripts/provision_int8.py
       - name: Run IR gate (real model)
         env:
           MEMENTO_IR_GATE: "1"
+          ORT_DYLIB_PATH: "${{ github.workspace }}/vendor/onnxruntime-linux/libonnxruntime.so"
         run: cargo test -p memento-ir-gate --test ir_gate
 
   bench-compile:
@@ -80,6 +100,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo bench --no-run
 
   audit:
