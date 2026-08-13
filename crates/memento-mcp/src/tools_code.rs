@@ -146,10 +146,7 @@ impl McpServer {
         let symbols = port.callers_of(&self.ctx, &p.project_id, &p.symbol).await?;
         if symbols.is_empty() {
             return Err(ToolError(DomainError::NotFound {
-                what: format!(
-                    "callers of '{}' in project '{}'",
-                    p.symbol, p.project_id
-                ),
+                what: format!("callers of '{}' in project '{}'", p.symbol, p.project_id),
             }));
         }
         Ok(Json(SymbolsOutput { symbols }))
@@ -166,10 +163,7 @@ impl McpServer {
         let symbols = port.callees_of(&self.ctx, &p.project_id, &p.symbol).await?;
         if symbols.is_empty() {
             return Err(ToolError(DomainError::NotFound {
-                what: format!(
-                    "callees of '{}' in project '{}'",
-                    p.symbol, p.project_id
-                ),
+                what: format!("callees of '{}' in project '{}'", p.symbol, p.project_id),
             }));
         }
         Ok(Json(SymbolsOutput { symbols }))
@@ -229,10 +223,7 @@ impl McpServer {
             .await?;
         if artifacts.is_empty() {
             return Err(ToolError(DomainError::NotFound {
-                what: format!(
-                    "code matching '{}' in project '{}'",
-                    p.query, p.project_id
-                ),
+                what: format!("code matching '{}' in project '{}'", p.query, p.project_id),
             }));
         }
         Ok(Json(CodeSearchOutput {
@@ -428,7 +419,11 @@ mod tests {
             ))
             .await
             .expect("missing ok");
-        assert_eq!(error_code(&missing), "NOT_FOUND", "unknown symbol → NOT_FOUND (B1)");
+        assert_eq!(
+            error_code(&missing),
+            "NOT_FOUND",
+            "unknown symbol → NOT_FOUND (B1)"
+        );
 
         // callers_of/callees_of depth 2 (REQ-CK-005).
         let callers = client
@@ -571,7 +566,11 @@ mod tests {
             ))
             .await
             .expect("structured error result");
-        assert_eq!(error_code(&err), "NOT_FOUND", "callers_of unknown → NOT_FOUND");
+        assert_eq!(
+            error_code(&err),
+            "NOT_FOUND",
+            "callers_of unknown → NOT_FOUND"
+        );
         let v = text_of(&err);
         assert!(
             v["detail"].as_str().unwrap().contains("noSuchSymbol_xyz"),
@@ -600,7 +599,11 @@ mod tests {
             ))
             .await
             .expect("structured error result");
-        assert_eq!(error_code(&err), "NOT_FOUND", "callees_of unknown → NOT_FOUND");
+        assert_eq!(
+            error_code(&err),
+            "NOT_FOUND",
+            "callees_of unknown → NOT_FOUND"
+        );
 
         task.abort();
     }
@@ -622,7 +625,11 @@ mod tests {
             ))
             .await
             .expect("structured error result");
-        assert_eq!(error_code(&err), "NOT_FOUND", "search with no matches → NOT_FOUND");
+        assert_eq!(
+            error_code(&err),
+            "NOT_FOUND",
+            "search with no matches → NOT_FOUND"
+        );
 
         task.abort();
     }
@@ -646,13 +653,14 @@ mod tests {
             ))
             .await
             .expect("structured error result");
-        assert_eq!(error_code(&err), "INVALID_INPUT", "empty query → INVALID_INPUT");
+        assert_eq!(
+            error_code(&err),
+            "INVALID_INPUT",
+            "empty query → INVALID_INPUT"
+        );
         let v = text_of(&err);
         assert!(
-            v["detail"]
-                .as_str()
-                .unwrap()
-                .contains("non-empty query"),
+            v["detail"].as_str().unwrap().contains("non-empty query"),
             "detail explains the precondition"
         );
 
@@ -674,7 +682,11 @@ mod tests {
             ))
             .await
             .expect("structured error result");
-        assert_eq!(error_code(&err), "INVALID_INPUT", "whitespace query → INVALID_INPUT");
+        assert_eq!(
+            error_code(&err),
+            "INVALID_INPUT",
+            "whitespace query → INVALID_INPUT"
+        );
 
         task.abort();
     }
@@ -711,7 +723,10 @@ mod tests {
                 json!({ "project_id": project_id, "query": "absent_zz" }),
             ),
         ] {
-            let err = client.call_tool(call(tool, args)).await.expect("err result");
+            let err = client
+                .call_tool(call(tool, args))
+                .await
+                .expect("err result");
             assert_eq!(error_code(&err), "NOT_FOUND", "{tool} empty-result");
         }
 
