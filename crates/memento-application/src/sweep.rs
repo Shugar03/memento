@@ -134,6 +134,17 @@ impl AppService {
         if audit_days != RETENTION_DISABLED {
             let audit_cutoff = self.clock.now() - chrono::Duration::days(audit_days as i64);
             report.audit_expired_count = self.audit.sweep_expired(audit_cutoff)?;
+            // Events sweep (REQ-OBS-010, design D5): the events JSONL is
+            // pruned with the SAME retention pattern and cutoff as audit —
+            // even when MEMENTO_EVENTS is off today (a previous run's file).
+            let events_pruned = prune_events_file(&self.root, ctx.tenant_id(), audit_cutoff)?;
+            if events_pruned > 0 {
+                tracing::info!(
+                    tenant = %ctx.tenant_id(),
+                    events_pruned,
+                    "events log swept (REQ-OBS-010)"
+                );
+            }
         }
 
         self.record_audit(
@@ -150,6 +161,76 @@ impl AppService {
         );
         Ok(report)
     }
+}
+
+/// Prune expired lines from the tenant's operational events JSONL
+/// (`<root>/logs/<tid>.events.jsonl`, REQ-OBS-010). Same pattern as the
+/// audit sweep: lines whose `ts` is strictly older than `cutoff` are
+/// removed, malformed lines are kept (preserve evidence), and the file is
+/// rewritten atomically (temp + rename). A missing file is a no-op (0).
+///
+/// # Errors
+///
+/// * `Io` — the file cannot be read or the temp file cannot be written.
+fn prune_events_file(
+    root: &std::path::Path,
+    tenant_id: &memento_domain::TenantId,
+    cutoff: chrono::DateTime<chrono::Utc>,
+) -> Result<usize, DomainError> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = root
+        .join("logs")
+        .join(format!("{tenant_id}.events.jsonl"));
+    let file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(DomainError::Io { source: err }),
+    };
+    let reader = BufReader::new(file);
+
+    let mut kept: Vec<String> = Vec::new();
+    let mut removed = 0usize;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(err) => return Err(DomainError::Io { source: err }),
+        };
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(v) => {
+                let ts_str = v.get("ts").and_then(|x| x.as_str()).unwrap_or("");
+                let line_ts = chrono::DateTime::parse_from_rfc3339(ts_str)
+                    .map(|t| t.with_timezone(&chrono::Utc))
+                    .ok();
+                match line_ts {
+                    Some(ts) if ts < cutoff => {
+                        removed += 1;
+                    }
+                    _ => kept.push(line),
+                }
+            }
+            Err(_) => kept.push(line), // keep malformed
+        }
+    }
+
+    if removed == 0 {
+        return Ok(0);
+    }
+
+    // Atomic rewrite: write to .<pid>.tmp, then rename over the live file
+    // (same pattern as the audit sweep).
+    let tmp = path.with_extension(format!("events.jsonl.sweep-{}.tmp", std::process::id()));
+    let mut out = std::fs::File::create(&tmp).map_err(|source| DomainError::Io { source })?;
+    for line in &kept {
+        writeln!(out, "{line}").map_err(|source| DomainError::Io { source })?;
+    }
+    out.flush().map_err(|source| DomainError::Io { source })?;
+    drop(out);
+    std::fs::rename(&tmp, &path).map_err(|source| DomainError::Io { source })?;
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -357,5 +438,100 @@ mod tests {
             .expect("longer audit horizon");
         assert_eq!(app.audit_retention_days(&ts.ctx()).unwrap(), 365);
         assert_eq!(app.retention_days(&ts.ctx()).unwrap(), 30);
+    }
+
+    #[tokio::test]
+    async fn sweep_prunes_events_lines_with_the_audit_cutoff() {
+        // REQ-OBS-010: the events JSONL (`logs/<tid>.events.jsonl`) is swept
+        // with the SAME retention pattern as audit — lines strictly older
+        // than the effective audit cutoff are pruned, fresh lines stay, and
+        // the sweep works even when the events file was written by a
+        // previous run (events env off today).
+        let ts = TempStore::new();
+        let now = chrono::Utc::now();
+        let app = test_app(&ts, TestClock::new(now - chrono::Duration::days(60))).await;
+        ingest(&app, &ts, "recuerdo de hace 60 días").await;
+
+        // Plant old + fresh event lines directly (a sink stamps `now()` at
+        // record time, so direct writes pin the ages).
+        let event_line = |days_ago: i64, probe: &str| {
+            serde_json::to_string(&serde_json::json!({
+                "ts": (now - chrono::Duration::days(days_ago)).to_rfc3339(),
+                "tenant_id": ts.tenant_id().to_string(),
+                "agent_id": null,
+                "action": "search",
+                "target": {"probe": probe},
+                "outcome": "ok",
+                "error_code": null,
+                "chore_id": null,
+            }))
+            .unwrap()
+        };
+        let old_line = event_line(60, "old");
+        let fresh_line = event_line(5, "fresh");
+        std::fs::write(
+            app.events_log_path(),
+            format!("{old_line}\n{fresh_line}\n"),
+        )
+        .expect("plant events lines");
+
+        // Re-open at "now": the data cutoff (30 d) drops the old chunk and
+        // the AUDIT cutoff (mirrors data, 30 d) drops the old event line.
+        let fresh = test_app(&ts, TestClock::new(now)).await;
+        let report = fresh.retention_sweep(&ts.ctx()).await.expect("sweep");
+        assert_eq!(report.expired_count, 1, "old chunk expired");
+
+        let raw = std::fs::read_to_string(fresh.events_log_path()).expect("events file");
+        assert!(
+            !raw.contains("\"probe\":\"old\""),
+            "old event line pruned: {raw}"
+        );
+        assert!(
+            raw.contains("\"probe\":\"fresh\""),
+            "fresh event line kept: {raw}"
+        );
+        // The audit file keeps its first line ordering (ingest from the
+        // 60d-ago app open) — the events sweep never touches it.
+        let audit = std::fs::read_to_string(fresh.audit_log_path()).expect("audit file");
+        let first: serde_json::Value =
+            serde_json::from_str(audit.lines().next().expect("audit line")).expect("json");
+        assert_eq!(first["action"], "ingest", "audit first line unchanged");
+    }
+
+    #[tokio::test]
+    async fn sweep_events_opt_out_keeps_lines_indefinitely() {
+        // REQ-OBS-010: `audit_days = 0` opts the tenant out of the audit
+        // sweep — the events file follows the SAME pattern, so it is also
+        // retained indefinitely.
+        let ts = TempStore::new();
+        let now = chrono::Utc::now();
+        let app = test_app(&ts, TestClock::new(now - chrono::Duration::days(365))).await;
+        app.set_audit_retention_days(&ts.ctx(), Some(0))
+            .await
+            .expect("opt out");
+        let old_line = serde_json::to_string(&serde_json::json!({
+            "ts": (now - chrono::Duration::days(365)).to_rfc3339(),
+            "tenant_id": ts.tenant_id().to_string(),
+            "agent_id": null,
+            "action": "search",
+            "target": {"probe": "very-old"},
+            "outcome": "ok",
+            "error_code": null,
+            "chore_id": null,
+        }))
+        .unwrap();
+        std::fs::write(app.events_log_path(), format!("{old_line}\n")).expect("plant");
+
+        let fresh = test_app(&ts, TestClock::new(now)).await;
+        let report = fresh.retention_sweep(&ts.ctx()).await.expect("sweep");
+        assert_eq!(
+            report.audit_expired_count, 0,
+            "opt-out: nothing swept from audit"
+        );
+        let raw = std::fs::read_to_string(fresh.events_log_path()).expect("events file");
+        assert!(
+            raw.contains("\"probe\":\"very-old\""),
+            "old event line preserved under opt-out"
+        );
     }
 }
