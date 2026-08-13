@@ -22,37 +22,79 @@ use lancedb::index::Index;
 use lancedb::index::scalar::{FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use memento_domain::{DomainError, TenantContext, WorkspaceId};
+use memento_observability::EventRecord;
 use memento_ports::{SearchFilters, SearchHit};
+use tracing::Instrument;
 
 /// Max results a single search may return (REQ-MR-007 budget context).
 pub const MAX_TOP_K: usize = 100;
 
 /// Build the FTS index over `text` if missing and there is data to train on.
 /// Idempotent; no-op on an empty table (retried on the next search).
+///
+/// The build runs inside a `fts_ensure` span (REQ-OBS-003) and appends a
+/// tenant-scoped `fts_build` event (REQ-OBS-008) through the store's shared
+/// [`EventSink`] when one is attached — ids/counts only (index name + row
+/// count), outcome ok|error with the stable code.
 pub async fn ensure_fts_index(store: &LanceStore) -> Result<(), DomainError> {
-    let table = store.table(CHUNKS).await?;
-    let indices = table
-        .list_indices()
-        .await
-        .map_err(|err| map_error("list_indices", err))?;
-    if indices.iter().any(|i| i.name == FTS_INDEX_NAME) {
-        return Ok(());
-    }
-    let rows = table
-        .count_rows(None)
-        .await
-        .map_err(|err| map_error("count_rows", err))?;
-    if rows == 0 {
-        return Ok(());
-    }
+    let span = tracing::info_span!(
+        "fts_ensure",
+        tenant_id = %store.tenant_id(),
+        chore_id = tracing::field::Empty,
+    );
+    async {
+        let table = store.table(CHUNKS).await?;
+        let indices = table
+            .list_indices()
+            .await
+            .map_err(|err| map_error("list_indices", err))?;
+        if indices.iter().any(|i| i.name == FTS_INDEX_NAME) {
+            return Ok(());
+        }
+        let rows = table
+            .count_rows(None)
+            .await
+            .map_err(|err| map_error("count_rows", err))?;
+        if rows == 0 {
+            return Ok(());
+        }
 
-    let builder = FtsIndexBuilder::default().ascii_folding(true);
-    table
-        .create_index(&[COL_TEXT], Index::FTS(builder))
-        .name(FTS_INDEX_NAME.to_string())
-        .execute()
-        .await
-        .map_err(|err| map_error("create_fts_index", err))
+        let builder = FtsIndexBuilder::default().ascii_folding(true);
+        let result = table
+            .create_index(&[COL_TEXT], Index::FTS(builder))
+            .name(FTS_INDEX_NAME.to_string())
+            .execute()
+            .await
+            .map_err(|err| map_error("create_fts_index", err));
+        if let Some(sink) = store.events() {
+            let event = match &result {
+                Ok(()) => EventRecord {
+                    ts: chrono::Utc::now(),
+                    tenant_id: *store.tenant_id(),
+                    agent_id: None, // adapter actor — no agent (never faked)
+                    action: "fts_build".to_string(),
+                    target: serde_json::json!({"index": FTS_INDEX_NAME, "chunks": rows}),
+                    outcome: "ok",
+                    error_code: None,
+                    chore_id: None,
+                },
+                Err(err) => EventRecord {
+                    ts: chrono::Utc::now(),
+                    tenant_id: *store.tenant_id(),
+                    agent_id: None,
+                    action: "fts_build".to_string(),
+                    target: serde_json::json!({"index": FTS_INDEX_NAME, "chunks": rows}),
+                    outcome: "error",
+                    error_code: Some(err.code()),
+                    chore_id: None,
+                },
+            };
+            sink.record(&event);
+        }
+        result
+    }
+    .instrument(span)
+    .await
 }
 
 /// BM25 full-text search within the tenant+workspace scope, ranked by score

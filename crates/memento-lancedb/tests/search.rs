@@ -3,9 +3,11 @@
 
 use chrono::Utc;
 use memento_domain::{ChunkId, DocId, MemoryChunk, Provenance, SourceKind, WorkspaceId};
-use memento_lancedb::{LanceStore, add_chunks_batch, full_text_search, vector_search};
+use memento_lancedb::{LanceStore, add_chunks_batch, ensure_fts_index, full_text_search, vector_search};
+use memento_observability::EventSink;
 use memento_ports::{DEFAULT_RRF_K, SearchPort, SearchQuery};
 use memento_testkit::{TempStore, deterministic_embed};
+use std::sync::Arc;
 
 /// Build a chunk with deterministic provenance; `vector` uses the testkit
 /// hash-bucketed embedding so tests need no ONNX runtime.
@@ -270,4 +272,44 @@ async fn hybrid_flag_errors_until_application_layer() {
         .await
         .expect_err("hybrid not servable by the port alone");
     assert_eq!(err.code(), memento_domain::error::CODE_INVALID_INPUT);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fts_build_appends_event_when_sink_attached() {
+    // REQ-OBS-008 (design D5): with an EventSink attached via with_events,
+    // the first FTS index build appends one tenant-scoped `fts_build` line
+    // (ids+counts: index name + trained row count). A repeated ensure is a
+    // no-op — the index exists, so NO second event (idempotent by design).
+    let ts = TempStore::new();
+    let sink = EventSink::tenant(ts.root(), ts.tenant_id()).expect("sink opens");
+    let store = LanceStore::open(&ts.ctx(), ts.root())
+        .await
+        .expect("open store")
+        .with_events(Some(Arc::new(sink)));
+    store.ensure_schema().await.expect("ensure schema");
+    let ws = *ts.workspace_id();
+    let doc = DocId::new();
+    let c = chunk(&ts, "El río de la memoria nunca deja de fluir.", ws, doc);
+    add_chunks_batch(&store, &ts.ctx(), std::slice::from_ref(&c))
+        .await
+        .expect("add");
+
+    ensure_fts_index(&store).await.expect("first build");
+    ensure_fts_index(&store).await.expect("idempotent (no-op)");
+
+    let path = ts
+        .root()
+        .join("logs")
+        .join(format!("{}.events.jsonl", ts.tenant_id()));
+    let raw = std::fs::read_to_string(&path).expect("events file");
+    let lines: Vec<serde_json::Value> = raw
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    assert_eq!(lines.len(), 1, "one fts_build event, idempotent index");
+    assert_eq!(lines[0]["action"], "fts_build");
+    assert_eq!(lines[0]["outcome"], "ok");
+    assert_eq!(lines[0]["tenant_id"], ts.tenant_id().to_string());
+    assert_eq!(lines[0]["target"]["index"], "chunks_text_fts");
+    assert_eq!(lines[0]["target"]["chunks"], 1, "trained row count");
 }
