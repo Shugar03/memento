@@ -10,6 +10,10 @@ lancedb.workspace = true
 datafusion-common.workspace = true
 memento-domain = { path = "../memento-domain" }
 memento-ports = { path = "../memento-ports" }
+# Best-effort operational events (REQ-OBS-008): LanceStore::with_events lets
+# the application share its EventSink so fts_build lands in the same tenant
+# events file (design D5).
+memento-observability = { path = "../memento-observability" }
 async-trait.workspace = true
 chrono.workspace = true
 futures.workspace = true

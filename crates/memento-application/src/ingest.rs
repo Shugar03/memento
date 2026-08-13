@@ -36,7 +36,7 @@
 //! the ingest still succeeded and only the dedup probe for that doc degrades
 //! (traced loudly).
 
-use crate::{AppService, EMBED_BATCH, MAX_BLOB_BYTES, MAX_CHUNKS_PER_DOC, embedding_model_version};
+use crate::{AppService, EMBED_BATCH, MAX_BLOB_BYTES, MAX_CHUNKS_PER_DOC};
 use memento_domain::{
     ChoreId, ChunkId, DocId, DomainError, MemoryChunk, Provenance, SourceKind, TenantContext,
 };
@@ -434,7 +434,10 @@ impl AppService {
                         doc_id: spec.doc_id,
                         chunk_id: id,
                         created_at: spec.created_at,
-                        embedding_model_version: embedding_model_version().to_string(),
+                        // REQ-OBS-012 (design D3): the stamp is the embedder's
+                        // REAL loaded-model label (the port), never an
+                        // env-only guess.
+                        embedding_model_version: self.embedding_model_version().to_string(),
                         tenant_id: *ctx.tenant_id(),
                         workspace_id: *ctx.workspace_id(),
                         agent_id: ctx.agent_id().clone(),

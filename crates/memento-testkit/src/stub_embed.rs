@@ -55,11 +55,22 @@ pub fn deterministic_embed(text: &str, dim: usize) -> Vec<f32> {
 pub struct StubEmbedPort {
     /// Vector dimension (defaults to the E5-base 768 used in production).
     pub dim: usize,
+    /// The provenance label reported through [`EmbedPort::model_version`]
+    /// (REQ-OBS-012): configurable so application tests can simulate any
+    /// loaded model (e.g. an int8-labeled stub while the env would claim
+    /// FP32 — the flagship divergence case).
+    pub model_version: Option<&'static str>,
 }
 
 impl Default for StubEmbedPort {
     fn default() -> Self {
-        Self { dim: 768 }
+        Self {
+            dim: 768,
+            // The default production label (E5-base FP32): matches what the
+            // application stamps under --no-embeddings and what today's
+            // env-only check returns when MEMENTO_QUANTIZED_MODEL is unset.
+            model_version: Some("multilingual-e5-base-v0.0.3"),
+        }
     }
 }
 
@@ -70,6 +81,10 @@ impl EmbedPort for StubEmbedPort {
             .iter()
             .map(|t| deterministic_embed(t, self.dim))
             .collect())
+    }
+
+    fn model_version(&self) -> Option<&'static str> {
+        self.model_version
     }
 }
 
@@ -109,5 +124,38 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], deterministic_embed("uno", 768));
         assert_eq!(out[2], deterministic_embed("tres", 768));
+    }
+
+    #[tokio::test]
+    async fn stub_embed_port_reports_configured_label_through_the_port() {
+        // REQ-OBS-012 (design D3): the stub's provenance label is
+        // configurable so application tests can simulate any loaded model.
+        // Through `dyn EmbedPort` (exactly how the application consumes it):
+        // * default → the production E5-base FP32 label (matches the
+        //   env-only stamp of today's application);
+        // * configured → the label the test asks for (e.g. int8 while the
+        //   env would claim FP32 — the flagship divergence case).
+        let default_port: &dyn memento_ports::EmbedPort = &StubEmbedPort::default();
+        assert_eq!(
+            default_port.model_version(),
+            Some("multilingual-e5-base-v0.0.3"),
+            "default label is the production E5-base label"
+        );
+
+        let int8_port: &dyn memento_ports::EmbedPort = &StubEmbedPort {
+            dim: 768,
+            model_version: Some("multilingual-e5-base-int8-v0.0.3"),
+        };
+        assert_eq!(
+            int8_port.model_version(),
+            Some("multilingual-e5-base-int8-v0.0.3"),
+            "configured label flows through the port boundary"
+        );
+
+        let unknown: &dyn memento_ports::EmbedPort = &StubEmbedPort {
+            dim: 768,
+            model_version: None,
+        };
+        assert_eq!(unknown.model_version(), None, "None = unknown, never faked");
     }
 }

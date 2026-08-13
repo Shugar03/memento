@@ -78,7 +78,10 @@ impl AppService {
             metrics::counter!("memento_search_requests_total", "tenant_id" => tenant.clone())
                 .increment(1);
             let started = std::time::Instant::now();
-            let result = if query.rrf_enabled {
+            // Copy flags before `query` is moved into the retrieval branch
+            // (the event records them after the call).
+            let (rrf_enabled, rerank) = (query.rrf_enabled, query.rerank);
+            let result = if rrf_enabled {
                 self.hybrid_search(ctx, query).await
             } else {
                 // Default mode: BM25 only (REQ-MR-001/002). The port validates
@@ -87,6 +90,31 @@ impl AppService {
             };
             metrics::histogram!("memento_search_duration_ms", "tenant_id" => tenant)
                 .record(started.elapsed().as_secs_f64() * 1000.0);
+            // REQ-OBS-008: the search operational event — ids+counts only
+            // (hit count + mode flags), outcome ok|error with the stable
+            // error code. No-op without a sink.
+            match &result {
+                Ok(hits) => self.record_event(
+                    Some(ctx.agent_id()),
+                    "search",
+                    serde_json::json!({
+                        "hits": hits.len(),
+                        "rrf": rrf_enabled,
+                        "rerank": rerank,
+                    }),
+                    "ok",
+                    None,
+                    None,
+                ),
+                Err(err) => self.record_event(
+                    Some(ctx.agent_id()),
+                    "search",
+                    serde_json::json!({"hits": 0}),
+                    "error",
+                    Some(err.code()),
+                    None,
+                ),
+            }
             result
         }
         .instrument(span)
@@ -100,7 +128,7 @@ impl AppService {
         ctx: &TenantContext,
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, DomainError> {
-        let query_vec = self.embed_query(&query.query).await?;
+        let query_vec = self.embed_query(ctx, &query.query).await?;
 
         // Both legs are tenant+workspace scoped (REQ-MR-006). The FTS leg
         // honors doc/source filters; the vector leg scopes workspace only
@@ -238,7 +266,7 @@ impl AppService {
     /// once, store, and clear when over the cap. Exact match only —
     /// deterministic and safe. Only ever called from the hybrid (RRF) path,
     /// so FTS-only searches never touch the cache.
-    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, DomainError> {
+    async fn embed_query(&self, ctx: &TenantContext, query: &str) -> Result<Vec<f32>, DomainError> {
         // REQ-MR-003: hybrid without embeddings is a structured error.
         let embedder = self
             .embedder
@@ -273,7 +301,19 @@ impl AppService {
             .ok_or_else(|| DomainError::EmbeddingFailed {
                 message: "embedder returned no vector for the query".into(),
             })?;
-        self.query_embed_cache.insert(key, vec.clone())?;
+        // REQ-OBS-008 "cache_evict" (query cache, design D5): when the cache
+        // clears itself past the cap, the dropped entry count is one event.
+        let evicted = self.query_embed_cache.insert(key, vec.clone())?;
+        if evicted > 0 {
+            self.record_event(
+                Some(ctx.agent_id()),
+                "cache_evict",
+                serde_json::json!({"entries": evicted, "cache": "query"}),
+                "ok",
+                None,
+                None,
+            );
+        }
         Ok(vec)
     }
 

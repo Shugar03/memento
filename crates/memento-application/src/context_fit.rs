@@ -104,76 +104,84 @@ impl AppService {
             )
             .increment(1);
             let started = std::time::Instant::now();
-            if req.budget_tokens == 0 {
-                return Ok(ContextFitResult {
-                    chunks: Vec::new(),
-                    total_tokens: 0,
-                    reason: Some("budget_zero".into()),
-                });
-            }
-
-            let candidates = self
-                .search(
-                    ctx,
-                    SearchQuery {
-                        query: req.query.clone(),
-                        top_k: req.top_k,
-                        workspace_id: req.workspace_id,
-                        rrf_enabled: req.rrf_enabled,
-                        rrf_k: req.rrf_k,
-                        rerank: false,
-                        filters: None,
-                    },
-                )
-                .await?;
-
-            if candidates.is_empty() {
-                return Ok(ContextFitResult {
-                    chunks: Vec::new(),
-                    total_tokens: 0,
-                    reason: None,
-                });
-            }
-
-            // Value = score + feedback bonus (≤ +0.5, design D6). The bonus is
-            // the mean of the chunk's usefulness signals scaled to the cap.
-            let mut valued: Vec<(f32, SearchHit, usize)> = Vec::with_capacity(candidates.len());
-            for hit in candidates {
-                let records = feedback_for_chunk(&self.store, ctx, &hit.chunk_id).await?;
-                let bonus = if records.is_empty() {
-                    0.0
-                } else {
-                    let mean: f32 =
-                        records.iter().map(|r| r.score).sum::<f32>() / records.len() as f32;
-                    (mean * FEEDBACK_BONUS_MAX).clamp(0.0, FEEDBACK_BONUS_MAX)
-                };
-                let tokens = self.chunker.token_count(&hit.text);
-                valued.push((hit.score + bonus, hit, tokens));
-            }
-            // Highest value first; id tiebreak for determinism.
-            valued.sort_by(|a, b| {
-                b.0.partial_cmp(&a.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.1.chunk_id.to_string().cmp(&b.1.chunk_id.to_string()))
-            });
-
-            // Greedy fit: take chunks while the running total fits the budget.
-            let mut fitted: Vec<SearchHit> = Vec::new();
-            let mut total_tokens = 0usize;
-            let mut reason: Option<String> = None;
-            for (_, hit, tokens) in valued {
-                if total_tokens + tokens > req.budget_tokens {
-                    if fitted.is_empty() && reason.is_none() {
-                        // REQ-MR-004: budget smaller than the smallest candidate
-                        // → empty set + reason (never a truncated first chunk).
-                        reason = Some("budget_smaller_than_smallest_chunk".into());
-                    }
-                    break;
+            let result: Result<ContextFitResult, DomainError> = async {
+                if req.budget_tokens == 0 {
+                    return Ok(ContextFitResult {
+                        chunks: Vec::new(),
+                        total_tokens: 0,
+                        reason: Some("budget_zero".into()),
+                    });
                 }
-                total_tokens += tokens;
-                fitted.push(hit);
+
+                let candidates = self
+                    .search(
+                        ctx,
+                        SearchQuery {
+                            query: req.query.clone(),
+                            top_k: req.top_k,
+                            workspace_id: req.workspace_id,
+                            rrf_enabled: req.rrf_enabled,
+                            rrf_k: req.rrf_k,
+                            rerank: false,
+                            filters: None,
+                        },
+                    )
+                    .await?;
+
+                if candidates.is_empty() {
+                    return Ok(ContextFitResult {
+                        chunks: Vec::new(),
+                        total_tokens: 0,
+                        reason: None,
+                    });
+                }
+
+                // Value = score + feedback bonus (≤ +0.5, design D6). The bonus is
+                // the mean of the chunk's usefulness signals scaled to the cap.
+                let mut valued: Vec<(f32, SearchHit, usize)> = Vec::with_capacity(candidates.len());
+                for hit in candidates {
+                    let records = feedback_for_chunk(&self.store, ctx, &hit.chunk_id).await?;
+                    let bonus = if records.is_empty() {
+                        0.0
+                    } else {
+                        let mean: f32 =
+                            records.iter().map(|r| r.score).sum::<f32>() / records.len() as f32;
+                        (mean * FEEDBACK_BONUS_MAX).clamp(0.0, FEEDBACK_BONUS_MAX)
+                    };
+                    let tokens = self.chunker.token_count(&hit.text);
+                    valued.push((hit.score + bonus, hit, tokens));
+                }
+                // Highest value first; id tiebreak for determinism.
+                valued.sort_by(|a, b| {
+                    b.0.partial_cmp(&a.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.1.chunk_id.to_string().cmp(&b.1.chunk_id.to_string()))
+                });
+
+                // Greedy fit: take chunks while the running total fits the budget.
+                let mut fitted: Vec<SearchHit> = Vec::new();
+                let mut total_tokens = 0usize;
+                let mut reason: Option<String> = None;
+                for (_, hit, tokens) in valued {
+                    if total_tokens + tokens > req.budget_tokens {
+                        if fitted.is_empty() && reason.is_none() {
+                            // REQ-MR-004: budget smaller than the smallest candidate
+                            // → empty set + reason (never a truncated first chunk).
+                            reason = Some("budget_smaller_than_smallest_chunk".into());
+                        }
+                        break;
+                    }
+                    total_tokens += tokens;
+                    fitted.push(hit);
+                }
+                debug_assert!(total_tokens <= req.budget_tokens, "fit ≤ budget");
+                Ok(ContextFitResult {
+                    chunks: fitted,
+                    total_tokens,
+                    reason,
+                })
             }
-            debug_assert!(total_tokens <= req.budget_tokens, "fit ≤ budget");
+            .await;
             // REQ-OBS-006: latency of a completed fit (the greedy loop is
             // the measurable tail; the validation paths above return early).
             metrics::histogram!(
@@ -181,11 +189,32 @@ impl AppService {
                 "tenant_id" => ctx.tenant_id().to_string()
             )
             .record(started.elapsed().as_secs_f64() * 1000.0);
-            Ok(ContextFitResult {
-                chunks: fitted,
-                total_tokens,
-                reason,
-            })
+            // REQ-OBS-008: the context-fit operational event — ids+counts
+            // only (fitted chunks + token total + reason). No-op without a
+            // sink.
+            match &result {
+                Ok(fit) => self.record_event(
+                    Some(ctx.agent_id()),
+                    "context_fit",
+                    serde_json::json!({
+                        "chunks": fit.chunks.len(),
+                        "total_tokens": fit.total_tokens,
+                        "reason": fit.reason,
+                    }),
+                    "ok",
+                    None,
+                    None,
+                ),
+                Err(err) => self.record_event(
+                    Some(ctx.agent_id()),
+                    "context_fit",
+                    serde_json::json!({"chunks": 0, "total_tokens": 0}),
+                    "error",
+                    Some(err.code()),
+                    None,
+                ),
+            }
+            result
         }
         .instrument(span)
         .await

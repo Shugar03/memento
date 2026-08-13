@@ -604,6 +604,74 @@ mod tests {
         assert_eq!(active_model_version(), MODEL_VERSION);
     }
 
+    /// Drop guard that removes a transient file tree (divergence test below
+    /// creates the DEFAULT int8 path under the crate CWD; `models/` is
+    /// gitignored, so this only ever touches local disk).
+    struct CleanupGuard(PathBuf);
+
+    impl Drop for CleanupGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = self.0.parent().map(|p| std::fs::remove_dir(p));
+        }
+    }
+
+    #[test]
+    fn active_model_version_returns_int8_when_default_model_present_without_env() {
+        // REQ-OBS-012 divergence case 1 (loader side): int8 file PRESENT at
+        // the default path and MEMENTO_QUANTIZED_MODEL unset → the loaded
+        // model IS int8, so the label must be int8. This is the truth the
+        // application will stamp (S3.6); today the app's env-only check
+        // wrongly says FP32 in this exact case.
+        let _guard = QUANTIZED_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var(QUANTIZED_MODEL_ENV);
+            std::env::remove_var(FP32_MODEL_ENV);
+        }
+        let path = PathBuf::from(DEFAULT_QUANTIZED_PATH);
+        std::fs::create_dir_all(path.parent().expect("default dir")).unwrap();
+        std::fs::write(&path, b"fake-int8").unwrap();
+        let _cleanup = CleanupGuard(path.clone());
+
+        assert_eq!(
+            active_model_version(),
+            MODEL_VERSION_QUANTIZED,
+            "default int8 file present → int8 label (the loader truth)"
+        );
+    }
+
+    #[test]
+    fn active_model_version_forces_stock_label_on_fp32_opt_out() {
+        // REQ-OBS-012: MEMENTO_FP32_MODEL is the explicit opt-out — even with
+        // a valid int8 file on disk, the label is the stock FP32 one (the
+        // user asked for FP32, so FP32 is the truth). No fallback event/counter
+        // in this case: the divergence detection (S3.6) keys off FP32 label
+        // WITHOUT the opt-out.
+        let _guard = QUANTIZED_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var(FP32_MODEL_ENV, "1");
+        }
+        let dir = std::env::temp_dir().join("memento-int8-fp32-optout-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let model_path = dir.join("model.onnx");
+        std::fs::write(&model_path, b"fake").unwrap();
+        unsafe {
+            std::env::set_var(QUANTIZED_MODEL_ENV, &model_path);
+        }
+
+        assert_eq!(
+            active_model_version(),
+            MODEL_VERSION,
+            "FP32 opt-out wins over a present int8 file"
+        );
+        // SAFETY: restore the env (process-global) so parallel tests under
+        // QUANTIZED_ENV_LOCK never observe this test's mutation.
+        unsafe {
+            std::env::remove_var(FP32_MODEL_ENV);
+            std::env::remove_var(QUANTIZED_MODEL_ENV);
+        }
+    }
+
     /// Serializes tests that mutate `MEMENTO_METRICS` (process-global env).
     static METRICS_ENV_LOCK: Mutex<()> = Mutex::new(());
 

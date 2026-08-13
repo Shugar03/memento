@@ -78,6 +78,13 @@ impl EmbedPort for FastEmbedEmbedder {
             }),
         }
     }
+
+    /// REQ-OBS-012 (design D3): the provenance truth — the label of the
+    /// model actually loaded (loader-side int8/FP32 file check), `None` when
+    /// disabled (`--no-embeddings`). Never an env-only guess.
+    fn model_version(&self) -> Option<&'static str> {
+        self.loader.model_version()
+    }
 }
 
 #[cfg(test)]
@@ -191,5 +198,31 @@ mod tests {
 
         let err = embedder.embed(&["algo"]).await.expect_err("disabled");
         assert_eq!(err.code(), memento_domain::error::CODE_EMBEDDING_FAILED);
+    }
+
+    #[tokio::test]
+    async fn embed_port_reports_loader_label_as_provenance_truth() {
+        // REQ-OBS-012 (design D3): through the `dyn EmbedPort` boundary the
+        // adapter must report the label of the model ACTUALLY loaded — the
+        // application stamps this on every chunk. The loader's label is the
+        // truth (int8/FP32 from the real file check), never an env guess.
+        let embedder = embedder_with(Arc::new(RecordingBackend::new()));
+        let port: &dyn memento_ports::EmbedPort = &embedder;
+        assert_eq!(
+            port.model_version(),
+            Some(MODEL_VERSION),
+            "port label = loader label (RecordingBackend is a stock-model stub)"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_port_reports_none_when_disabled() {
+        // REQ-OBS-012: a disabled embedder (`--no-embeddings`) reports
+        // `None` through the port — the application falls back to the
+        // default provenance label instead of a fake one.
+        let loader = ModelLoader::new(std::path::PathBuf::new(), false);
+        let embedder = FastEmbedEmbedder::new(Arc::new(loader));
+        let port: &dyn memento_ports::EmbedPort = &embedder;
+        assert_eq!(port.model_version(), None, "disabled → None, never faked");
     }
 }

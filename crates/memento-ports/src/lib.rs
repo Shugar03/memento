@@ -248,4 +248,28 @@ mod tests {
         // The DomainError taxonomy is the single error type across ports.
         let _: DomainError = DomainError::WorkspaceRequired;
     }
+
+    #[test]
+    fn embed_port_model_version_defaults_to_none() {
+        // REQ-OBS-012 (design D3): `EmbedPort::model_version()` is a default
+        // method so existing implementors keep compiling untouched. A minimal
+        // implementor that only provides `embed` reports `None` — "unknown
+        // label" — through the trait object; adapters that know their loaded
+        // model (embed-fastembed) override it.
+        struct NoVersion;
+
+        #[async_trait]
+        impl EmbedPort for NoVersion {
+            async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, DomainError> {
+                unimplemented!()
+            }
+        }
+
+        let port: Box<dyn EmbedPort> = Box::new(NoVersion);
+        assert_eq!(
+            port.model_version(),
+            None,
+            "default label is None: existing implementors are unaffected"
+        );
+    }
 }
