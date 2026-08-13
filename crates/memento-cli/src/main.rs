@@ -8,6 +8,11 @@ use memento_i18n::I18n;
 
 #[tokio::main]
 async fn main() {
+    // REQ-OBS-001: stderr tracing subscriber, env-gated (MEMENTO_LOG=1 AND
+    // --json absent from argv — the equivalence harness needs byte-pure
+    // stderr on JSON error paths). Must run before clap consumes argv.
+    memento_observability::tracing::init_cli_subscriber();
+
     // Locale must be known BEFORE clap parses: the help tree is built from
     // the i18n tables, so `--locale` is pre-scanned from argv (args.rs).
     let locale = memento_cli::args::locale_from_argv();
