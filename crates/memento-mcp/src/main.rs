@@ -20,7 +20,9 @@ use rmcp::ServiceExt;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    init_tracing();
+    // Shared MCP subscriber (design D4): always on over stdio, honors
+    // RUST_LOG + MEMENTO_LOG_FORMAT (REQ-OBS-002).
+    memento_observability::tracing::init_mcp_subscriber();
     let opts = match parse_args() {
         Ok(opts) => opts,
         Err(msg) => {
@@ -134,14 +136,4 @@ fn print_help() {
            MEMENTO_TOKEN          Tenant API key (memo_<tid>_<secret>)\n  \
            MEMENTO_AGENT_ID       Agent identity bound to every tool call\n"
     );
-}
-
-fn init_tracing() {
-    use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,memento_mcp=info"));
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
 }

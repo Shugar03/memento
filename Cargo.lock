@@ -4172,6 +4172,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4187,6 +4188,7 @@ dependencies = [
  "memento-embed-fastembed",
  "memento-i18n",
  "memento-lancedb",
+ "memento-observability",
  "memento-okf",
  "memento-parse",
  "memento-ports",
@@ -4309,6 +4311,7 @@ dependencies = [
  "memento-domain",
  "memento-embed-fastembed",
  "memento-i18n",
+ "memento-observability",
  "memento-okf",
  "memento-parse",
  "memento-ports",
@@ -4436,6 +4439,7 @@ dependencies = [
  "memento-application",
  "memento-domain",
  "memento-lancedb",
+ "memento-observability",
  "memento-ports",
  "memento-tenant",
  "memento-testkit",

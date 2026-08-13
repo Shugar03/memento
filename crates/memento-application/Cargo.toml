@@ -26,3 +26,5 @@ rand_core.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 memento-testkit = { path = "../memento-testkit" }
+# span capture in REQ-OBS-003 tests (fmt JSON + FmtSpan::FULL, global default).
+tracing-subscriber.workspace = true

@@ -18,6 +18,8 @@ memento-tenant = { path = "../memento-tenant" }
 memento-parse = { path = "../memento-parse" }
 memento-embed-fastembed = { path = "../memento-embed-fastembed" }
 memento-okf = { path = "../memento-okf" }
+# stderr tracing subscribers + env gates (REQ-OBS-001/002, design D4).
+memento-observability = { path = "../memento-observability" }
 # stats/code-status inspection reads adapter counters directly (REQ-CL-006).
 memento-lancedb = { path = "../memento-lancedb" }
 clap.workspace = true

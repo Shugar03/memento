@@ -607,6 +607,110 @@ fn tenant_backup_export_and_live_restore_rejection() {
     assert_eq!(v["code"], "INVALID_INPUT", "quiesce requirement named");
 }
 
+// ---- REQ-OBS-001: CLI tracing subscriber gate -------------------------------
+
+/// Provisioned root is reused as a PATH that resolves nothing: anydoc cannot
+/// be located, so the CLI's fallback warn (`startup.rs`) fires when the
+/// subscriber is installed — the warn-path exists for the assertions below.
+fn warn_path() -> tempfile::TempDir {
+    tempfile::tempdir().expect("warn path dir")
+}
+
+#[test]
+fn tracing_off_zero_stderr_bytes() {
+    // REQ-OBS-001: MEMENTO_LOG unset → no tracing bytes on stderr, even
+    // when the anydoc fallback warn would fire (no subscriber installed).
+    let (dir, token) = provisioned();
+    let empty_path = warn_path();
+    let out = authed(dir.path(), &token)
+        .env("PATH", empty_path.path())
+        .args(["--json", "health"])
+        .output()
+        .expect("run health");
+    let v = json_of(&out);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        out.stderr.is_empty(),
+        "zero stderr bytes with logging off: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn tracing_on_warn_stderr_never_stdout() {
+    // REQ-OBS-001: MEMENTO_LOG=1 → the anydoc fallback warn lands on
+    // stderr; stdout stays machine-pure. The D4 gate skips the subscriber
+    // whenever `--json` is in argv (byte-purity), so a SUCCESSFUL --json
+    // run also keeps stderr clean — that is the same contract the
+    // equivalence harness relies on for failing commands.
+    let (dir, token) = provisioned();
+    let empty_path = warn_path();
+
+    // Human mode: subscriber active → warn on stderr, never stdout.
+    let out = authed(dir.path(), &token)
+        .env("MEMENTO_LOG", "1")
+        .env("PATH", empty_path.path())
+        .args(["health"])
+        .output()
+        .expect("run health");
+    assert!(out.status.success(), "health ok: {:?}", out.status.code());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.is_empty(),
+        "subscriber installed and emitting on stderr"
+    );
+    assert!(
+        stderr.contains("anydoc unavailable"),
+        "warn visible on stderr: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("anydoc"),
+        "tracing never touches stdout: {stdout}"
+    );
+
+    // JSON mode (successful command): subscriber skipped → stderr clean.
+    let out = authed(dir.path(), &token)
+        .env("MEMENTO_LOG", "1")
+        .env("PATH", empty_path.path())
+        .args(["--json", "health"])
+        .output()
+        .expect("run health json");
+    let v = json_of(&out);
+    assert_eq!(v["status"], "ok");
+    assert!(
+        out.stderr.is_empty(),
+        "json mode keeps stderr pure: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn tracing_json_mode_keeps_stderr_byte_pure() {
+    // REQ-OBS-001: with --json the CLI subscriber must be skipped entirely
+    // (equivalence harness): a failing command keeps the exact pre-change
+    // structured stderr — ONE JSON document, no tracing lines — even with
+    // MEMENTO_LOG=1 and the anydoc warn path available.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let empty_path = warn_path();
+    for format in [None, Some("json")] {
+        let mut cmd = bin();
+        cmd.env("MEMENTO_ROOT", dir.path())
+            .env("MEMENTO_AGENT_ID", "test-agent")
+            .env("MEMENTO_LOG", "1")
+            .env("PATH", empty_path.path())
+            .args(["--json", "--no-embeddings", "stats"]);
+        if let Some(fmt) = format {
+            cmd.env("MEMENTO_LOG_FORMAT", fmt);
+        }
+        let out = cmd.output().expect("run stats");
+        assert_eq!(out.status.code(), Some(4), "auth exit code");
+        let v: Value = serde_json::from_slice(&out.stderr)
+            .expect("stderr is ONE structured JSON document (no tracing lines)");
+        assert_eq!(v["code"], "AUTH_FAILED", "stable envelope code");
+    }
+}
+
 // ---- health -----------------------------------------------------------------
 
 #[test]
