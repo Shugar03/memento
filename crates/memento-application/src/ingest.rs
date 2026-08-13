@@ -48,6 +48,7 @@ use memento_ports::{IngestDocumentRequest, IngestResult, IngestTextRequest};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 /// Bounded in-flight buffer between the chunk producer and the embed
 /// consumer (B2). The embedder processes one 64-chunk ONNX batch at a time
@@ -94,52 +95,62 @@ impl AppService {
         ctx: &TenantContext,
         req: IngestTextRequest,
     ) -> Result<IngestResult, DomainError> {
-        if req.text.trim().is_empty() {
-            return Err(DomainError::InvalidInput {
-                message: "ingest_text requires non-empty text".into(),
-            });
-        }
-        let chore_id = ChoreId::new();
-        let hash = self.content_hash(req.text.as_bytes());
+        // REQ-OBS-003: the ingest span carries the tenant/agent/workspace
+        // context; the chore_id slot opens empty and is recorded as soon as
+        // the id exists (record-if-Some, never "None").
+        let span = crate::ingest_span(ctx, *ctx.workspace_id());
+        let record_chore = span.clone();
+        async {
+            if req.text.trim().is_empty() {
+                return Err(DomainError::InvalidInput {
+                    message: "ingest_text requires non-empty text".into(),
+                });
+            }
+            let chore_id = ChoreId::new();
+            record_chore.record("chore_id", chore_id.to_string());
+            let hash = self.content_hash(req.text.as_bytes());
 
-        // Dedup probe (REQ-MC-005): identical content in this tenant already
-        // ingested → reference the existing records, write nothing.
-        if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
-            let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
-            self.record_audit(
+            // Dedup probe (REQ-MC-005): identical content in this tenant already
+            // ingested → reference the existing records, write nothing.
+            if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
+                let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
+                self.record_audit(
+                    ctx,
+                    "ingest",
+                    json!({
+                        "doc_id": doc.doc_id,
+                        "chunks": ids.len(),
+                        "duplicate": true,
+                        "source": "text",
+                    }),
+                    Some(chore_id),
+                );
+                return Ok(IngestResult {
+                    chunk_ids: ids,
+                    doc_id: doc.doc_id,
+                    chore_id: Some(chore_id),
+                });
+            }
+
+            let doc_id = req.doc_id.unwrap_or_default();
+            let title = title_of(req.metadata.as_ref());
+            let created_at = self.clock.now();
+
+            self.stage_chunks(
                 ctx,
-                "ingest",
-                json!({
-                    "doc_id": doc.doc_id,
-                    "chunks": ids.len(),
-                    "duplicate": true,
-                    "source": "text",
-                }),
-                Some(chore_id),
-            );
-            return Ok(IngestResult {
-                chunk_ids: ids,
-                doc_id: doc.doc_id,
-                chore_id: Some(chore_id),
-            });
+                req.text,
+                StageSpec {
+                    doc_id,
+                    source: SourceKind::Text,
+                    title,
+                    content_hash: hash,
+                    created_at,
+                    chore_id,
+                },
+            )
+            .await
         }
-
-        let doc_id = req.doc_id.unwrap_or_default();
-        let title = title_of(req.metadata.as_ref());
-        let created_at = self.clock.now();
-
-        self.stage_chunks(
-            ctx,
-            req.text,
-            StageSpec {
-                doc_id,
-                source: SourceKind::Text,
-                title,
-                content_hash: hash,
-                created_at,
-                chore_id,
-            },
-        )
+        .instrument(span)
         .await
     }
 
@@ -158,68 +169,77 @@ impl AppService {
         ctx: &TenantContext,
         req: IngestDocumentRequest,
     ) -> Result<IngestResult, DomainError> {
-        if req.blob.is_empty() {
-            return Err(DomainError::InvalidInput {
-                message: "ingest_document requires a non-empty blob".into(),
-            });
-        }
-        if req.blob.len() as u64 > MAX_BLOB_BYTES {
-            return Err(DomainError::QuotaExceeded {
-                message: format!(
-                    "document blob is {} bytes, limit is {MAX_BLOB_BYTES}",
-                    req.blob.len()
-                ),
-            });
-        }
-        let chore_id = ChoreId::new();
-        let hash = self.content_hash(&req.blob);
+        // REQ-OBS-003: same span contract as ingest_text — the chore id is
+        // recorded as soon as it exists.
+        let span = crate::ingest_span(ctx, *ctx.workspace_id());
+        let record_chore = span.clone();
+        async {
+            if req.blob.is_empty() {
+                return Err(DomainError::InvalidInput {
+                    message: "ingest_document requires a non-empty blob".into(),
+                });
+            }
+            if req.blob.len() as u64 > MAX_BLOB_BYTES {
+                return Err(DomainError::QuotaExceeded {
+                    message: format!(
+                        "document blob is {} bytes, limit is {MAX_BLOB_BYTES}",
+                        req.blob.len()
+                    ),
+                });
+            }
+            let chore_id = ChoreId::new();
+            record_chore.record("chore_id", chore_id.to_string());
+            let hash = self.content_hash(&req.blob);
 
-        // Dedup probe on the raw blob (REQ-MC-005).
-        if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
-            let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
-            self.record_audit(
+            // Dedup probe on the raw blob (REQ-MC-005).
+            if let Some(doc) = find_doc_by_hash(&self.store, ctx, &hash).await? {
+                let ids = chunk_ids_by_doc(&self.store, ctx, &doc.doc_id).await?;
+                self.record_audit(
+                    ctx,
+                    "ingest",
+                    json!({
+                        "doc_id": doc.doc_id,
+                        "chunks": ids.len(),
+                        "duplicate": true,
+                        "source": source_label(&doc.source),
+                    }),
+                    Some(chore_id),
+                );
+                return Ok(IngestResult {
+                    chunk_ids: ids,
+                    doc_id: doc.doc_id,
+                    chore_id: Some(chore_id),
+                });
+            }
+
+            // Single normalization boundary (REQ-MC-002); failures are
+            // stage-named by the adapter (REQ-MC-007) and write nothing.
+            let parsed = self.parse.parse(&req.blob, req.source_hint.clone()).await?;
+            if parsed.markdown.trim().is_empty() {
+                return Err(DomainError::InvalidInput {
+                    message: "document normalized to empty content".into(),
+                });
+            }
+
+            let doc_id = req.doc_id.unwrap_or_default();
+            let title = title_of(req.metadata.as_ref());
+            let created_at = self.clock.now();
+
+            self.stage_chunks(
                 ctx,
-                "ingest",
-                json!({
-                    "doc_id": doc.doc_id,
-                    "chunks": ids.len(),
-                    "duplicate": true,
-                    "source": source_label(&doc.source),
-                }),
-                Some(chore_id),
-            );
-            return Ok(IngestResult {
-                chunk_ids: ids,
-                doc_id: doc.doc_id,
-                chore_id: Some(chore_id),
-            });
+                parsed.markdown,
+                StageSpec {
+                    doc_id,
+                    source: parsed.source_kind,
+                    title,
+                    content_hash: hash,
+                    created_at,
+                    chore_id,
+                },
+            )
+            .await
         }
-
-        // Single normalization boundary (REQ-MC-002); failures are
-        // stage-named by the adapter (REQ-MC-007) and write nothing.
-        let parsed = self.parse.parse(&req.blob, req.source_hint.clone()).await?;
-        if parsed.markdown.trim().is_empty() {
-            return Err(DomainError::InvalidInput {
-                message: "document normalized to empty content".into(),
-            });
-        }
-
-        let doc_id = req.doc_id.unwrap_or_default();
-        let title = title_of(req.metadata.as_ref());
-        let created_at = self.clock.now();
-
-        self.stage_chunks(
-            ctx,
-            parsed.markdown,
-            StageSpec {
-                doc_id,
-                source: parsed.source_kind,
-                title,
-                content_hash: hash,
-                created_at,
-                chore_id,
-            },
-        )
+        .instrument(span)
         .await
     }
 

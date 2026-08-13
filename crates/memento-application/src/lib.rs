@@ -54,7 +54,7 @@ pub mod sweep;
 pub mod tenant_config;
 
 use crate::audit::AuditLogger;
-use memento_domain::{DomainError, TenantContext};
+use memento_domain::{DomainError, TenantContext, WorkspaceId};
 use memento_lancedb::LanceStore;
 use memento_parse::chunk::Chunker;
 use memento_ports::{EmbedPort, KnowledgePort, ParsePort, RerankPort};
@@ -63,6 +63,44 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tracing::Instrument;
+
+/// Open a `search` span carrying the tenant/agent/workspace context and an
+/// empty `chore_id` slot (REQ-OBS-003, design D4). Absent fields are omitted,
+/// never faked: callers `record("chore_id", ...)` only when a chore id
+/// exists; the slot serializes as nothing otherwise.
+pub(crate) fn search_span(ctx: &TenantContext, workspace_id: WorkspaceId) -> tracing::Span {
+    tracing::info_span!(
+        "search",
+        tenant_id = %ctx.tenant_id(),
+        agent_id = %ctx.agent_id(),
+        workspace_id = %workspace_id,
+        chore_id = tracing::field::Empty,
+    )
+}
+
+/// The same context span for `ingest` (chore-tracked: the span records the
+/// generated chore id once it exists).
+pub(crate) fn ingest_span(ctx: &TenantContext, workspace_id: WorkspaceId) -> tracing::Span {
+    tracing::info_span!(
+        "ingest",
+        tenant_id = %ctx.tenant_id(),
+        agent_id = %ctx.agent_id(),
+        workspace_id = %workspace_id,
+        chore_id = tracing::field::Empty,
+    )
+}
+
+/// The same context span for `context_fit`.
+pub(crate) fn context_fit_span(ctx: &TenantContext, workspace_id: WorkspaceId) -> tracing::Span {
+    tracing::info_span!(
+        "context_fit",
+        tenant_id = %ctx.tenant_id(),
+        agent_id = %ctx.agent_id(),
+        workspace_id = %workspace_id,
+        chore_id = tracing::field::Empty,
+    )
+}
 
 /// Embedding model version stamped on every chunk (REQ-MC-004). Mirrors
 /// `memento_embed_fastembed::model::MODEL_VERSION`; duplicated here because
@@ -215,39 +253,51 @@ impl AppService {
         embedder: Option<Arc<dyn EmbedPort>>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, DomainError> {
-        let root = root.as_ref().to_path_buf();
-        let store = LanceStore::open(ctx, &root).await?;
-        store.ensure_schema().await?;
-        let chunker = Chunker::embedded()?;
-        let audit = AuditLogger::new(&root, ctx.tenant_id())?;
-        let service = Self {
-            store: Arc::new(store),
-            parse,
-            embedder,
-            reranker: None,
-            chunker: Arc::new(chunker),
-            clock,
-            audit,
-            root,
-            code: Mutex::new(None),
-            embed_warm: AtomicBool::new(false),
-            query_embed_cache: QueryEmbedCache::new(MAX_QUERY_CACHE_ENTRIES),
-        };
-        // B3 fix (obs 2663): pre-warm the embedder at tenant open so the
-        // first user-facing `code.search` does NOT pay the ~5 s ONNX cold
-        // start. Idempotent on every process (AtomicBool absorbs re-entry).
-        // Under `--no-embeddings` (embedder is None) this is a no-op.
-        // A warmup failure (broken model, missing file) is logged but does
-        // NOT fail service open: the first user call will see the embedder
-        // error with the same surface. This preserves REQ-MC-007's
-        // structured-error invariant for ingest with a broken embedder.
-        if let Err(err) = service.warm_embedder().await {
-            tracing::warn!(
-                ?err,
-                "embedder pre-warm failed; first call will pay the cold-start cost"
-            );
+        // REQ-OBS-003: tenant-open runs inside a context span. There is no
+        // workspace at open time — the field is omitted, never faked.
+        let span = tracing::info_span!(
+            "tenant_open",
+            tenant_id = %ctx.tenant_id(),
+            agent_id = %ctx.agent_id(),
+            chore_id = tracing::field::Empty,
+        );
+        async {
+            let root = root.as_ref().to_path_buf();
+            let store = LanceStore::open(ctx, &root).await?;
+            store.ensure_schema().await?;
+            let chunker = Chunker::embedded()?;
+            let audit = AuditLogger::new(&root, ctx.tenant_id())?;
+            let service = Self {
+                store: Arc::new(store),
+                parse,
+                embedder,
+                reranker: None,
+                chunker: Arc::new(chunker),
+                clock,
+                audit,
+                root,
+                code: Mutex::new(None),
+                embed_warm: AtomicBool::new(false),
+                query_embed_cache: QueryEmbedCache::new(MAX_QUERY_CACHE_ENTRIES),
+            };
+            // B3 fix (obs 2663): pre-warm the embedder at tenant open so the
+            // first user-facing `code.search` does NOT pay the ~5 s ONNX cold
+            // start. Idempotent on every process (AtomicBool absorbs re-entry).
+            // Under `--no-embeddings` (embedder is None) this is a no-op.
+            // A warmup failure (broken model, missing file) is logged but does
+            // NOT fail service open: the first user call will see the embedder
+            // error with the same surface. This preserves REQ-MC-007's
+            // structured-error invariant for ingest with a broken embedder.
+            if let Err(err) = service.warm_embedder().await {
+                tracing::warn!(
+                    ?err,
+                    "embedder pre-warm failed; first call will pay the cold-start cost"
+                );
+            }
+            Ok(service)
         }
-        Ok(service)
+        .instrument(span)
+        .await
     }
 
     /// Pre-warm the embedder (B3 fix from obs 2663).
@@ -260,14 +310,25 @@ impl AppService {
     /// surface it; `AppService::open` logs-and-continues so the service
     /// stays open for non-embedding flows (REQ-MC-007 invariant).
     pub async fn warm_embedder(&self) -> Result<(), DomainError> {
-        if self.embed_warm.load(Ordering::Acquire) {
-            return Ok(());
+        // REQ-OBS-003: the pre-warm runs inside its own span. No agent is
+        // bound at service level — the field is omitted, never faked.
+        let span = tracing::info_span!(
+            "pre_warm",
+            tenant_id = %self.store.tenant_id(),
+            chore_id = tracing::field::Empty,
+        );
+        async {
+            if self.embed_warm.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if let Some(embedder) = &self.embedder {
+                embedder.embed(&[""]).await?;
+            }
+            self.embed_warm.store(true, Ordering::Release);
+            Ok(())
         }
-        if let Some(embedder) = &self.embedder {
-            embedder.embed(&[""]).await?;
-        }
-        self.embed_warm.store(true, Ordering::Release);
-        Ok(())
+        .instrument(span)
+        .await
     }
 
     /// The storage root this service is bound to.

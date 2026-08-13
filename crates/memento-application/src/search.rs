@@ -27,6 +27,7 @@ use memento_ports::{SearchFilters, SearchHit, SearchPort, SearchQuery};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use tracing::Instrument;
 
 /// Candidate pool fed to the cross-encoder reranker (A1): the fused top-10
 /// gives the reranker enough material to reorder into the requested top-5.
@@ -56,22 +57,30 @@ impl AppService {
         ctx: &TenantContext,
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, DomainError> {
-        if query.rerank && !query.rrf_enabled {
-            // A1 scope: rerank post-processes the RRF fusion (top-10 → top-5).
-            // An FTS-only search has no fused candidate pool, so the opt-in
-            // degrades to the FTS order with a warning — never a silent
-            // misbehavior, and never an error.
-            tracing::warn!(
-                "rerank applies to hybrid (rrf) searches only; ignoring for FTS-only query"
-            );
+        // REQ-OBS-003: the search span carries tenant/agent/workspace and an
+        // empty chore_id slot (a search has no chore id → omitted, never
+        // faked). No-op without a subscriber (REQ-OBS-004).
+        let span = crate::search_span(ctx, query.workspace_id);
+        async {
+            if query.rerank && !query.rrf_enabled {
+                // A1 scope: rerank post-processes the RRF fusion (top-10 → top-5).
+                // An FTS-only search has no fused candidate pool, so the opt-in
+                // degrades to the FTS order with a warning — never a silent
+                // misbehavior, and never an error.
+                tracing::warn!(
+                    "rerank applies to hybrid (rrf) searches only; ignoring for FTS-only query"
+                );
+            }
+            if query.rrf_enabled {
+                self.hybrid_search(ctx, query).await
+            } else {
+                // Default mode: BM25 only (REQ-MR-001/002). The port validates
+                // top_k and handles the empty-query no-match case.
+                self.store.search(ctx, query).await
+            }
         }
-        if query.rrf_enabled {
-            self.hybrid_search(ctx, query).await
-        } else {
-            // Default mode: BM25 only (REQ-MR-001/002). The port validates
-            // top_k and handles the empty-query no-match case.
-            self.store.search(ctx, query).await
-        }
+        .instrument(span)
+        .await
     }
 
     /// Hybrid retrieval: embed the query → vector leg + FTS leg → RRF fuse
@@ -259,6 +268,7 @@ mod tests {
     use memento_domain::DocId;
     use memento_ports::{DEFAULT_RRF_K, IngestTextRequest, SearchFilters};
     use memento_testkit::{StubEmbedPort, TempStore, TestClock, spanish_corpus};
+    use serde_json::Value;
     use std::sync::{Arc, Mutex};
 
     fn text_request(text: &str) -> IngestTextRequest {
@@ -732,5 +742,146 @@ mod tests {
 
         let hits = app.search(&ts.ctx(), q).await.expect("rerank degrades ok");
         assert!(!hits.is_empty(), "results returned unchanged");
+    }
+
+    // ---- REQ-OBS-003: spans with context -----------------------------------
+
+    /// Writes tracing output into the shared buffer (fmt JSON writer).
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("buffer lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The capture buffer, installed once per process: `set_global_default`
+    /// can run exactly once (a second call errors), so the subscriber is
+    /// installed lazily on first use and reused afterwards.
+    static CAPTURE: Mutex<Option<Arc<Mutex<Vec<u8>>>>> = Mutex::new(None);
+
+    fn ensure_capture_subscriber() -> Arc<Mutex<Vec<u8>>> {
+        let mut guard = CAPTURE.lock().expect("capture lock");
+        if let Some(buf) = guard.as_ref() {
+            return buf.clone();
+        }
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let sub = tracing_subscriber::fmt()
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+            .with_ansi(false)
+            .with_writer({
+                let buf = buf.clone();
+                move || SharedWriter(buf.clone())
+            })
+            .json()
+            .finish();
+        // Only the first caller wins; nothing else in this crate installs a
+        // global default, so the capture subscriber stays active.
+        let _ = tracing::subscriber::set_global_default(sub);
+        *guard = Some(buf.clone());
+        buf
+    }
+
+    /// Run `body` under the capture subscriber, returning the body result
+    /// plus every line emitted while it ran.
+    async fn capture_tracing<F, T>(body: F) -> (T, Vec<String>)
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let buf = ensure_capture_subscriber();
+        buf.lock().expect("buffer lock").clear();
+        let result = body.await;
+        let out = String::from_utf8(buf.lock().expect("buffer lock").clone()).expect("utf8");
+        (result, out.lines().map(str::to_string).collect())
+    }
+
+    /// The JSON documents emitted for span events of `name` (parsed). The
+    /// fmt-JSON formatter reports span events through `fields.message`
+    /// ("new"/"enter"/"exit"/"close"), with the span's fields in `span`.
+    /// Scoped by `tenant` so parallel tests (which share the process-global
+    /// capture subscriber) never pollute each other's assertions.
+    fn span_events<'a>(lines: &'a [String], name: &str, event: &str, tenant: &str) -> Vec<Value> {
+        lines
+            .iter()
+            .filter_map(|line| {
+                let v: Value = serde_json::from_str(line).ok()?;
+                (v["span"]["name"] == name
+                    && v["fields"]["message"] == event
+                    && v["span"]["tenant_id"] == tenant)
+                    .then_some(v)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn operation_spans_carry_context_omitting_or_recording_chore_id() {
+        // REQ-OBS-003 (one capture run per operation — the global capture
+        // subscriber is installed once per process):
+        // * search span: opens with tenant_id + agent_id + workspace_id; a
+        //   search carries no chore id, so the span MUST NOT contain a
+        //   chore_id field (absent fields are omitted, never faked).
+        // * ingest span: opens with context and NO chore_id field
+        //   (field::Empty), and records the generated chore id before the
+        //   span closes (record-if-Some, never "None").
+        let ts = TempStore::new();
+        let app = corpus_app(&ts).await;
+
+        // Ingest first: the span must record the chore id it generates.
+        let (res, lines) = capture_tracing(
+            app.ingest_text(
+                &ts.ctx(),
+                text_request("La memoria es la facultad de recordar las cosas pasadas."),
+            ),
+        )
+        .await;
+        let res = res.expect("ingest ok");
+        let chore_id = res.chore_id.expect("chore id returned").to_string();
+        let tenant = ts.tenant_id().to_string();
+        let opens = span_events(&lines, "ingest", "new", &tenant);
+        assert_eq!(opens.len(), 1, "one ingest span opens: {lines:?}");
+        assert!(
+            opens[0]["span"].get("chore_id").is_none(),
+            "chore_id starts empty (omitted at open): {}",
+            opens[0]["span"]
+        );
+        let closes = span_events(&lines, "ingest", "close", &tenant);
+        assert_eq!(closes.len(), 1, "one ingest span closes: {lines:?}");
+        assert_eq!(
+            closes[0]["span"]["chore_id"].as_str().expect("recorded chore id"),
+            chore_id,
+            "chore_id recorded before the span closes"
+        );
+
+        // Search after: the span carries context, never a chore id.
+        let q = SearchQuery::new("memoria", 10, *ts.workspace_id());
+        let (hits, lines) = capture_tracing(app.search(&ts.ctx(), q)).await;
+        let hits = hits.expect("search ok");
+        assert!(!hits.is_empty(), "search produced hits");
+        let opens = span_events(&lines, "search", "new", &tenant);
+        assert_eq!(opens.len(), 1, "exactly one search span opens: {lines:?}");
+        let span = &opens[0]["span"];
+        assert_eq!(
+            span["tenant_id"].as_str().expect("tenant field"),
+            ts.tenant_id().to_string(),
+            "tenant context on the span"
+        );
+        assert_eq!(
+            span["agent_id"].as_str().expect("agent field"),
+            "test-agent",
+            "agent context on the span"
+        );
+        assert_eq!(
+            span["workspace_id"].as_str().expect("workspace field"),
+            ts.workspace_id().to_string(),
+            "workspace context on the span"
+        );
+        assert!(
+            span.get("chore_id").is_none(),
+            "chore_id omitted when absent (REQ-OBS-003): {span}"
+        );
     }
 }
