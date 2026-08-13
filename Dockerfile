@@ -1,17 +1,17 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage build for Memento RS (T-105 in batch 11).
 #
-# Stage 1 (`build`): rust:1.85-bookworm produces the three release
+# Stage 1 (`build`): rust:1.95-bookworm produces the three release
 # binaries — `memento`, `memento-mcp`, `memento-worker` — with
 # stripped symbols and `lto = "thin"`. The toolchain tag matches
-# `rust-toolchain.toml` (edition 2024 floor).
+# `rust-toolchain.toml` (edition 2024 floor, rustc 1.95).
 #
 # Stage 2 (`runtime`): debian:bookworm-slim carries the binaries plus
 # the runtime shared libs (libssl, libgcc, ca-certificates). No Node,
 # no Cargo, no build tools — the image is the smallest surface that
 # actually serves requests.
 
-FROM rust:1.85-bookworm AS build
+FROM rust:1.95-bookworm AS build
 
 WORKDIR /src
 
