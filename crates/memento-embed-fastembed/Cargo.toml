@@ -28,3 +28,9 @@ memento-testkit = { path = "../memento-testkit" }
 # metrics::render() for the REQ-OBS-006 counter tests (own-process integration
 # binary keeps the process-global recorder deterministic).
 memento-observability = { path = "../memento-observability" }
+# tokenizer parity golden test: exercises the workspace-patched tokenizers
+# (vendor/tokenizers, trie compaction per huggingface PR #2039) against a
+# golden captured with the unpatched registry 0.22.2. Same feature set as the
+# fastembed-driven build (default features).
+tokenizers.workspace = true
+serde_json.workspace = true
