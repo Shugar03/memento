@@ -96,6 +96,14 @@ impl AppService {
         // (chore_id slot stays empty — context-fit is not chore-tracked).
         let span = crate::context_fit_span(ctx, req.workspace_id);
         async {
+            // REQ-OBS-006: operation counter (ids-only labels; no-op without
+            // a recorder).
+            metrics::counter!(
+                "memento_context_fit_requests_total",
+                "tenant_id" => ctx.tenant_id().to_string()
+            )
+            .increment(1);
+            let started = std::time::Instant::now();
             if req.budget_tokens == 0 {
                 return Ok(ContextFitResult {
                     chunks: Vec::new(),
@@ -166,6 +174,13 @@ impl AppService {
                 fitted.push(hit);
             }
             debug_assert!(total_tokens <= req.budget_tokens, "fit ≤ budget");
+            // REQ-OBS-006: latency of a completed fit (the greedy loop is
+            // the measurable tail; the validation paths above return early).
+            metrics::histogram!(
+                "memento_context_fit_duration_ms",
+                "tenant_id" => ctx.tenant_id().to_string()
+            )
+            .record(started.elapsed().as_secs_f64() * 1000.0);
             Ok(ContextFitResult {
                 chunks: fitted,
                 total_tokens,
@@ -328,5 +343,41 @@ mod tests {
         let result = app.context_fit(&ts.ctx(), req).await.expect("fit");
         assert!(!result.chunks.is_empty());
         assert!(result.reason.is_none(), "budget not exhausted");
+    }
+
+    #[tokio::test]
+    async fn metrics_context_fit_records_counter_and_duration_when_enabled() {
+        // REQ-OBS-006: with MEMENTO_METRICS=1 a completed context fit
+        // records its counter and latency (labeled by tenant id).
+        let _guard = crate::test_util::METRICS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::set_var("MEMENTO_METRICS", "1") };
+        let ts = TempStore::new();
+        let clock = memento_testkit::TestClock::default();
+        let app = test_app(&ts, clock).await;
+        ingest(&app, &ts, &memento_testkit::spanish_corpus().join(" ")).await;
+        let tenant = ts.tenant_id().to_string();
+
+        let req = ContextFitRequest::new("memoria", 1_000_000, 20, *ts.workspace_id());
+        let result = app.context_fit(&ts.ctx(), req).await.expect("fit");
+        assert!(!result.chunks.is_empty());
+
+        let render = memento_observability::metrics::render();
+        assert!(
+            render.contains(&format!(
+                "memento_context_fit_requests_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "context_fit counter recorded: {render}"
+        );
+        assert!(
+            render.contains(&format!(
+                "memento_context_fit_duration_ms_count{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "context_fit latency histogram observed: {render}"
+        );
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::remove_var("MEMENTO_METRICS") };
     }
 }

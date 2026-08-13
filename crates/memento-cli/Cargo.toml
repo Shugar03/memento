@@ -36,3 +36,5 @@ tracing-subscriber.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
+# in-process traffic probe for the metrics dump tests (REQ-OBS-007).
+metrics.workspace = true

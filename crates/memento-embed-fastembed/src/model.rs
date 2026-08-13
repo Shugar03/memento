@@ -71,6 +71,18 @@ fn hash_text(text: &str) -> u64 {
     hasher.finish()
 }
 
+/// The int8 file is missing → fall back to stock FP32: warn (visible through
+/// the CLI subscriber) + record the fallback counter (REQ-OBS-006, design
+/// D3). The `metrics` macro is a no-op without a recorder, so this costs
+/// nothing while `MEMENTO_METRICS` is off.
+fn record_fp32_fallback(model_path: &Path) {
+    tracing::warn!(
+        "int8 model not found at {}; falling back to stock FP32 (run the quantize script to provision it)",
+        model_path.display()
+    );
+    metrics::counter!("memento_embed_fallback_fp32_total").increment(1);
+}
+
 /// The embedding computation behind the loader (injectable for tests).
 pub trait EmbeddingBackend: Send + Sync {
     /// Embed each text; output lines up with input order.
@@ -119,10 +131,7 @@ impl FastEmbedBackend {
                     model_version: MODEL_VERSION_QUANTIZED,
                 });
             }
-            tracing::warn!(
-                "int8 model not found at {}; falling back to stock FP32 (run the quantize script to provision it)",
-                model_path.display()
-            );
+            record_fp32_fallback(&model_path);
         }
         let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Base)
             .with_cache_dir(cache_dir)
@@ -328,8 +337,14 @@ impl ModelLoader {
             for (idx, text) in texts.iter().enumerate() {
                 let key = hash_text(text);
                 if let Some(vec) = cache.get(&key) {
+                    // REQ-OBS-006 "cache hit (embed cache)": the text was
+                    // embedded before — zero inference, counter only. The
+                    // adapter has no tenant, so the counter is unlabeled
+                    // (documented scope note, design D5).
+                    metrics::counter!("memento_embed_cache_hits_total").increment(1);
                     result[idx] = Some(vec.clone());
                 } else {
+                    metrics::counter!("memento_embed_cache_misses_total").increment(1);
                     misses.push((idx, text));
                 }
             }
@@ -587,5 +602,29 @@ mod tests {
             std::env::set_var(QUANTIZED_MODEL_ENV, "C:\\nonexistent\\int8\\model.onnx");
         }
         assert_eq!(active_model_version(), MODEL_VERSION);
+    }
+
+    /// Serializes tests that mutate `MEMENTO_METRICS` (process-global env).
+    static METRICS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn fp32_fallback_records_fallback_counter() {
+        // REQ-OBS-006 (design D3): the FP32 fallback site records the
+        // fallback counter, visible in the registry when MEMENTO_METRICS=1.
+        let _guard = METRICS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::set_var("MEMENTO_METRICS", "1") };
+        // Install the recorder before the side effect runs (no-op gate).
+        let _ = memento_observability::metrics::ensure_recorder();
+
+        record_fp32_fallback(&PathBuf::from("C:\\missing\\int8\\model.onnx"));
+        record_fp32_fallback(&PathBuf::from("C:\\missing\\int8\\model.onnx"));
+        let render = memento_observability::metrics::render();
+        assert!(
+            render.contains("memento_embed_fallback_fp32_total 2"),
+            "fallback counter accumulates per fallback: {render}"
+        );
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::remove_var("MEMENTO_METRICS") };
     }
 }

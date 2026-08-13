@@ -262,6 +262,16 @@ impl AppService {
             chore_id = tracing::field::Empty,
         );
         async {
+            // REQ-OBS-006 (design D2): install the Prometheus recorder once
+            // when MEMENTO_METRICS=1 so the hot-path macros below actually
+            // record (they are no-ops without a recorder — zero work when the
+            // var is unset). OnceLock makes this free on every later call.
+            let _ = memento_observability::metrics::ensure_recorder();
+            metrics::counter!(
+                "memento_tenant_open_total",
+                "tenant_id" => ctx.tenant_id().to_string()
+            )
+            .increment(1);
             let root = root.as_ref().to_path_buf();
             let store = LanceStore::open(ctx, &root).await?;
             store.ensure_schema().await?;
@@ -324,6 +334,13 @@ impl AppService {
             if let Some(embedder) = &self.embedder {
                 embedder.embed(&[""]).await?;
             }
+            // REQ-OBS-006: the pre-warm operation counter (only when a warm
+            // actually ran; the AtomicBool absorbs re-entry).
+            metrics::counter!(
+                "memento_pre_warm_total",
+                "tenant_id" => self.store.tenant_id().to_string()
+            )
+            .increment(1);
             self.embed_warm.store(true, Ordering::Release);
             Ok(())
         }
@@ -440,6 +457,24 @@ pub(crate) mod test_util {
     use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
     use memento_testkit::{StubEmbedPort, TempStore, TestClock};
     use std::sync::Arc;
+
+    /// Serializes tests that mutate `MEMENTO_METRICS` (process-global env —
+    /// same pattern as the tenant resolver's `ENV_LOCK`). Every REQ-OBS-006
+    /// test must hold this guard while setting the env var.
+    pub static METRICS_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Parse the value of the metric line with the exact `line_prefix`
+    /// (e.g. `memento_ingest_chunks_total{tenant_id="..."}`). `None` when
+    /// the family/labeled series was not recorded at all.
+    pub(crate) fn metric_value(render: &str, line_prefix: &str) -> Option<u64> {
+        render
+            .lines()
+            .find(|line| line.starts_with(line_prefix))?
+            .rsplit_once(' ')?
+            .1
+            .parse()
+            .ok()
+    }
 
     /// The testkit clock is a `Clock` for the application (trait local to
     /// this crate, type from the dev-dependency — allowed by the orphan
@@ -560,5 +595,44 @@ pub(crate) mod test_util {
             memento_domain::WorkspaceId::new(),
             memento_domain::AgentId::new("test-agent"),
         )
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::test_util::{METRICS_ENV_LOCK, test_app};
+    use memento_testkit::{TempStore, TestClock};
+
+    #[tokio::test]
+    async fn metrics_tenant_open_and_pre_warm_recorded_when_enabled() {
+        // REQ-OBS-006: with MEMENTO_METRICS=1 the tenant-open operation and
+        // the embedder pre-warm each record a labeled counter (no-op when
+        // the var is unset — the recorder is only installed while on).
+        let _guard = METRICS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::set_var("MEMENTO_METRICS", "1") };
+
+        let ts = TempStore::new();
+        let clock = TestClock::default();
+        let app = test_app(&ts, clock).await;
+        let tenant = ts.tenant_id().to_string();
+
+        let render = memento_observability::metrics::render();
+        assert!(
+            render.contains(&format!(
+                "memento_tenant_open_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "tenant_open counter recorded: {render}"
+        );
+        assert!(
+            render.contains(&format!(
+                "memento_pre_warm_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
+            "pre_warm counter recorded: {render}"
+        );
+
+        // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
+        unsafe { std::env::remove_var("MEMENTO_METRICS") };
+        let _ = app.root(); // keep `app` alive for the assertions above
     }
 }
