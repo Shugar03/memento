@@ -225,8 +225,8 @@ mod tests {
         // embedder so the first user-facing search is fast. The warmup
         // runs EXACTLY ONCE per service — re-opening or re-warming must
         // not re-invoke the embedder.
-        use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
 
         struct CountingEmbed {
             warm_calls: AtomicUsize,

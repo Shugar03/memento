@@ -61,8 +61,5 @@ fn main() {
     // resolves this with a fallback chain (executable-relative, then
     // CWD-relative) for dev / install layouts where the absolute build-time
     // path no longer exists on the target machine.
-    println!(
-        "cargo:rustc-env=ORT_DYLIB_PATH_BAKED={}",
-        dll_abs.display()
-    );
+    println!("cargo:rustc-env=ORT_DYLIB_PATH_BAKED={}", dll_abs.display());
 }
