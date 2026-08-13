@@ -21,11 +21,11 @@
 use anyhow::Context;
 use clap::Parser;
 use memento_domain::DomainError;
-use memento_observability::sampler::{Sampler, SystemClock as SamplerSystemClock, SysinfoProbe};
+use memento_observability::sampler::{Sampler, SysinfoProbe, SystemClock as SamplerSystemClock};
 use memento_worker::backup_job::BackupJob;
 use memento_worker::maintenance::MaintenanceJob;
 use memento_worker::scheduler::{Clock, Scheduler, SystemClock};
-use memento_worker::startup::{build_sampler, WorkerContext, open};
+use memento_worker::startup::{WorkerContext, build_sampler, open};
 use memento_worker::sweep::SweepJob;
 use std::path::PathBuf;
 use std::sync::Arc;

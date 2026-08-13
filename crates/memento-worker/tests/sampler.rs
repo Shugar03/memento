@@ -89,7 +89,10 @@ async fn sampler_gate_on_writes_bound_tenant_sample_events() {
         &tid,
         Duration::from_millis(100),
         Arc::new(clock.clone()),
-        Arc::new(FixedProbe(SampleData { rss_bytes: 4242, thread_count: 5 })),
+        Arc::new(FixedProbe(SampleData {
+            rss_bytes: 4242,
+            thread_count: 5,
+        })),
     )
     .expect("gate on builds the sampler");
 
@@ -98,7 +101,11 @@ async fn sampler_gate_on_writes_bound_tenant_sample_events() {
 
     // First poll: now(0) < interval → no sample yet.
     poll_once().await;
-    assert_eq!(event_count(&path), 0, "no sample before the first interval elapses");
+    assert_eq!(
+        event_count(&path),
+        0,
+        "no sample before the first interval elapses"
+    );
 
     // Past the first interval → exactly one sample.
     clock.advance(Duration::from_millis(150));
@@ -140,7 +147,10 @@ fn sampler_gate_off_builds_nothing_and_creates_no_file() {
         &tid,
         Duration::from_secs(30),
         Arc::new(FakeClock::new(Duration::ZERO)),
-        Arc::new(FixedProbe(SampleData { rss_bytes: 1, thread_count: 1 })),
+        Arc::new(FixedProbe(SampleData {
+            rss_bytes: 1,
+            thread_count: 1,
+        })),
     );
     assert!(sampler.is_none(), "unset env builds no sampler");
     assert!(
@@ -164,7 +174,10 @@ fn sampler_gate_ignores_values_other_than_one() {
             &tid,
             Duration::from_secs(30),
             Arc::new(FakeClock::new(Duration::ZERO)),
-            Arc::new(FixedProbe(SampleData { rss_bytes: 1, thread_count: 1 })),
+            Arc::new(FixedProbe(SampleData {
+                rss_bytes: 1,
+                thread_count: 1,
+            })),
         );
         assert!(
             sampler.is_none(),

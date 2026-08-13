@@ -16,8 +16,8 @@
 
 use memento_application::AppService;
 use memento_domain::{DomainError, SourceKind, TenantContext, TenantId};
-use memento_observability::sampler::{Clock as SamplerClock, Sampler, SystemProbe};
 use memento_observability::EventSink;
+use memento_observability::sampler::{Clock as SamplerClock, Sampler, SystemProbe};
 use memento_ports::{ParsePort, ParsedDocument};
 use memento_tenant::TenantResolverImpl;
 use std::path::{Path, PathBuf};
