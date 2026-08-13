@@ -10,6 +10,7 @@
 pub mod code;
 pub mod ingest;
 pub mod memory;
+pub mod observability;
 pub mod stats;
 pub mod tenant;
 

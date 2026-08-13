@@ -24,7 +24,8 @@
 //! ├── search | get-chunk | feedback | delete | context-fit
 //! ├── code index|status|debug
 //! ├── stats
-//! └── health
+//! ├── health
+//! └── observability metrics
 //! ```
 //!
 //! Only `tenant create` runs unauthenticated (bootstrap path, REQ-TA-006);
@@ -64,6 +65,9 @@ pub async fn run(matches: &ArgMatches, i18n: &I18n) -> Result<(), DomainError> {
     let no_embeddings = matches.get_flag("no-embeddings");
     match matches.subcommand() {
         Some(("tenant", sub)) => commands::tenant::run(sub, &root, no_embeddings, i18n).await,
+        // Process-local observability dump: no app open, no credentials
+        // (REQ-OBS-007, design D7 — tenant-create bootstrap precedent).
+        Some(("observability", sub)) => commands::observability::run(sub),
         Some((
             name @ ("ingest" | "search" | "get-chunk" | "feedback" | "delete" | "context-fit"
             | "code" | "stats" | "health"),

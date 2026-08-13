@@ -29,6 +29,7 @@ pub fn build(i18n: &I18n) -> Command {
         .subcommand(code_cmd(i18n))
         .subcommand(stats_cmd(i18n))
         .subcommand(health_cmd(i18n))
+        .subcommand(observability_cmd(i18n))
 }
 
 // ---- global flags ----------------------------------------------------------
@@ -377,6 +378,19 @@ fn stats_cmd(i18n: &I18n) -> Command {
 
 fn health_cmd(i18n: &I18n) -> Command {
     Command::new("health").about(i18n.t(StringKey::CliHelpHealth))
+}
+
+// ---- observability ----------------------------------------------------------
+
+/// `observability metrics`: the Prometheus text dump (REQ-OBS-007, design
+/// D7). Process-local and root-independent — no tenant context is required,
+/// and no HTTP listener is ever bound.
+fn observability_cmd(i18n: &I18n) -> Command {
+    Command::new("observability")
+        .about(i18n.t(StringKey::CliHelpObservability))
+        .subcommand(
+            Command::new("metrics").about(i18n.t(StringKey::CliHelpObservabilityMetrics)),
+        )
 }
 
 // ---- env / flag resolution -------------------------------------------------

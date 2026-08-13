@@ -121,11 +121,14 @@ pub enum StringKey {
     CliMsgTokenCreated,
     CliMsgTokenRotated,
     CliPromptConfirmDelete,
+    // Observability commands (REQ-OBS-007, design D7).
+    CliHelpObservability,
+    CliHelpObservabilityMetrics,
 }
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 89] = [
+    pub const ALL: [StringKey; 91] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -215,6 +218,8 @@ impl StringKey {
         StringKey::CliMsgTokenCreated,
         StringKey::CliMsgTokenRotated,
         StringKey::CliPromptConfirmDelete,
+        StringKey::CliHelpObservability,
+        StringKey::CliHelpObservabilityMetrics,
     ];
 }
 
@@ -362,6 +367,13 @@ pub fn es(key: StringKey) -> &'static str {
         StringKey::CliPromptConfirmDelete => {
             "Escriba 'yes' para confirmar el borrado permanente del tenant {tid}:"
         }
+        // Observability commands (REQ-OBS-007).
+        StringKey::CliHelpObservability => {
+            "Observabilidad: métricas locales del proceso (sin HTTP)."
+        }
+        StringKey::CliHelpObservabilityMetrics => {
+            "Vuelca el registro de métricas como texto Prometheus (stdout o MEMENTO_METRICS_FILE)."
+        }
     }
 }
 
@@ -492,6 +504,13 @@ pub fn en(key: StringKey) -> &'static str {
         }
         StringKey::CliPromptConfirmDelete => {
             "Type 'yes' to confirm permanent deletion of tenant {tid}:"
+        }
+        // Observability commands (REQ-OBS-007).
+        StringKey::CliHelpObservability => {
+            "Observability: process-local metrics (no HTTP)."
+        }
+        StringKey::CliHelpObservabilityMetrics => {
+            "Dump the metrics registry as Prometheus text (stdout or MEMENTO_METRICS_FILE)."
         }
     }
 }
