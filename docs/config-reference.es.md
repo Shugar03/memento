@@ -51,6 +51,12 @@ Opcional. En su ausencia, los defaults son:
 | `MEMENTO_BENCH_LOC` | bench | `10000` (10k), `100000` (100k) | LOC del corpus de code-index bench. |
 | `MEMENTO_BENCH_EMBED` | bench | `0` | Si `1`, fuerza la corrida de embed bench. |
 | `RUST_LOG` | todo | `info` | Filtrado tracing. |
+| `MEMENTO_LOG` | `memento` | `0` | `1` = habilita el subscriber de tracing CLI en stderr (REQ-OBS-001). |
+| `MEMENTO_LOG_FORMAT` | todo | `pretty` | `pretty` o `json` para los subscribers de CLI/MCP/worker (REQ-OBS-002). |
+| `MEMENTO_METRICS` | todo | `0` | `1` = registra contadores/histogramas Prometheus en memoria; nunca se abre un listener HTTP (REQ-OBS-006/007). |
+| `MEMENTO_METRICS_FILE` | `memento` | stdout | Destino del dump `observability metrics` (REQ-OBS-007). |
+| `MEMENTO_EVENTS` | todo | `0` | `1` = escribe eventos operativos en `logs/<tid>.events.jsonl`; solo ids y conteos, nunca contenido, queries ni credenciales (REQ-OBS-008/009). |
+| `MEMENTO_OBSERVE_SAMPLES` | `memento-worker` | `0` | `1` = muestrea RSS + thread count cada 30 s al archivo de eventos del tenant bound (REQ-OBS-011). |
 
 El `memento-worker` **no** requiere `MEMENTO_TOKEN` ni `MEMENTO_AGENT_ID`
 (su identidad es operativa, no de tenant).
