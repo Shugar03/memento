@@ -930,9 +930,12 @@ mod events_tests {
         app.ingest_text(&ts.ctx(), text_request("la memoria es un río"))
             .await
             .expect("ingest");
-        app.search(&ts.ctx(), SearchQuery::new("memoria", 5, *ts.workspace_id()))
-            .await
-            .expect("search");
+        app.search(
+            &ts.ctx(),
+            SearchQuery::new("memoria", 5, *ts.workspace_id()),
+        )
+        .await
+        .expect("search");
 
         let fallbacks: Vec<_> = events_lines(&app)
             .into_iter()
@@ -998,7 +1001,10 @@ mod events_tests {
             )
             .await
             .expect("fit ok");
-        assert!(!hits.is_empty() && !fit.chunks.is_empty(), "fixture produces hits");
+        assert!(
+            !hits.is_empty() && !fit.chunks.is_empty(),
+            "fixture produces hits"
+        );
 
         let searches: Vec<_> = events_lines(&app)
             .into_iter()
@@ -1006,7 +1012,11 @@ mod events_tests {
             .collect();
         // One explicit search + the candidate-retrieval search context_fit
         // runs internally (REQ-OBS-008: every search appends its line).
-        assert_eq!(searches.len(), 2, "explicit + context_fit's internal search");
+        assert_eq!(
+            searches.len(),
+            2,
+            "explicit + context_fit's internal search"
+        );
         assert!(
             searches.iter().all(|s| s["outcome"] == "ok"),
             "both searches succeeded"
@@ -1028,8 +1038,7 @@ mod events_tests {
             "fitted chunk count"
         );
         assert_eq!(
-            fits[0]["target"]["total_tokens"],
-            fit.total_tokens as u64,
+            fits[0]["target"]["total_tokens"], fit.total_tokens as u64,
             "fitted token total"
         );
         // SAFETY: test-only env mutation, serialized by EVENTS_ENV_LOCK.

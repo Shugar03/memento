@@ -3,7 +3,9 @@
 
 use chrono::Utc;
 use memento_domain::{ChunkId, DocId, MemoryChunk, Provenance, SourceKind, WorkspaceId};
-use memento_lancedb::{LanceStore, add_chunks_batch, ensure_fts_index, full_text_search, vector_search};
+use memento_lancedb::{
+    LanceStore, add_chunks_batch, ensure_fts_index, full_text_search, vector_search,
+};
 use memento_observability::EventSink;
 use memento_ports::{DEFAULT_RRF_K, SearchPort, SearchQuery};
 use memento_testkit::{TempStore, deterministic_embed};

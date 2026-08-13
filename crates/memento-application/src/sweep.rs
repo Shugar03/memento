@@ -179,9 +179,7 @@ fn prune_events_file(
 ) -> Result<usize, DomainError> {
     use std::io::{BufRead, BufReader, Write};
 
-    let path = root
-        .join("logs")
-        .join(format!("{tenant_id}.events.jsonl"));
+    let path = root.join("logs").join(format!("{tenant_id}.events.jsonl"));
     let file = match std::fs::File::open(&path) {
         Ok(f) => f,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -469,11 +467,8 @@ mod tests {
         };
         let old_line = event_line(60, "old");
         let fresh_line = event_line(5, "fresh");
-        std::fs::write(
-            app.events_log_path(),
-            format!("{old_line}\n{fresh_line}\n"),
-        )
-        .expect("plant events lines");
+        std::fs::write(app.events_log_path(), format!("{old_line}\n{fresh_line}\n"))
+            .expect("plant events lines");
 
         // Re-open at "now": the data cutoff (30 d) drops the old chunk and
         // the AUDIT cutoff (mirrors data, 30 d) drops the old event line.

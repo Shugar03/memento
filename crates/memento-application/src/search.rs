@@ -266,11 +266,7 @@ impl AppService {
     /// once, store, and clear when over the cap. Exact match only —
     /// deterministic and safe. Only ever called from the hybrid (RRF) path,
     /// so FTS-only searches never touch the cache.
-    async fn embed_query(
-        &self,
-        ctx: &TenantContext,
-        query: &str,
-    ) -> Result<Vec<f32>, DomainError> {
+    async fn embed_query(&self, ctx: &TenantContext, query: &str) -> Result<Vec<f32>, DomainError> {
         // REQ-MR-003: hybrid without embeddings is a structured error.
         let embedder = self
             .embedder
