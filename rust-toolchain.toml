@@ -4,8 +4,11 @@
 # forks). The workspace uses edition 2024, which stabilized in 1.85.
 #
 # `cargo` will fetch the toolchain if it is missing. Update this file
-# when bumping the floor; the matching CI config (`.github/workflows/ci.yml`)
-# uses `dtolnay/rust-toolchain@1.85` and the Dockerfile uses the same tag.
-channel = "1.85"
+# when bumping the floor. The workflow (`.github/workflows/ci.yml`) uses
+# `dtolnay/rust-toolchain@stable`; this file is what actually pins the
+# compiler version, and the Dockerfile uses the same tag. 1.95 is the
+# minimum required by the pinned dependency set (sysinfo 0.39.6 needs
+# rustc 1.95; lance 9.0.0 / fsst / lancedb need 1.91).
+channel = "1.95"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

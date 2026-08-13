@@ -66,7 +66,7 @@ jobs:
       - name: Provision int8 model
         if: steps.model-cache.outputs.cache-hit != 'true'
         run: |
-          pip install --quiet onnxruntime huggingface_hub
+          pip install --quiet onnxruntime huggingface_hub onnx
           python crates/memento-ir-gate/scripts/provision_int8.py
       - name: Run IR gate (real model)
         env:
