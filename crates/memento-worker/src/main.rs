@@ -123,12 +123,9 @@ async fn shutdown_signal(shutdown: watch::Sender<bool>) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Shared worker subscriber (design D4): daemon logs to stderr, honors
+    // RUST_LOG + MEMENTO_LOG_FORMAT (REQ-OBS-002).
+    memento_observability::tracing::init_worker_subscriber();
 
     let args = Args::parse();
     let root = resolve_root(args.root).context("resolve storage root")?;

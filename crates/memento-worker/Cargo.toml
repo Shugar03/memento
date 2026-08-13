@@ -17,6 +17,8 @@ memento-ports = { path = "../memento-ports" }
 memento-application = { path = "../memento-application" }
 memento-tenant = { path = "../memento-tenant" }
 memento-lancedb = { path = "../memento-lancedb" }
+# shared stderr tracing subscriber (REQ-OBS-002, design D4).
+memento-observability = { path = "../memento-observability" }
 tokio.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
