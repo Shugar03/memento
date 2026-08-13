@@ -388,9 +388,7 @@ fn health_cmd(i18n: &I18n) -> Command {
 fn observability_cmd(i18n: &I18n) -> Command {
     Command::new("observability")
         .about(i18n.t(StringKey::CliHelpObservability))
-        .subcommand(
-            Command::new("metrics").about(i18n.t(StringKey::CliHelpObservabilityMetrics)),
-        )
+        .subcommand(Command::new("metrics").about(i18n.t(StringKey::CliHelpObservabilityMetrics)))
 }
 
 // ---- env / flag resolution -------------------------------------------------

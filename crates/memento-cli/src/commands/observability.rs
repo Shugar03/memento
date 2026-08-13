@@ -31,8 +31,9 @@ pub fn run(m: &ArgMatches) -> Result<(), DomainError> {
             Ok(())
         }
         _ => Err(DomainError::InvalidInput {
-            message: "unknown observability subcommand; run 'memento observability --help' for usage"
-                .into(),
+            message:
+                "unknown observability subcommand; run 'memento observability --help' for usage"
+                    .into(),
         }),
     }
 }

@@ -506,9 +506,7 @@ pub fn en(key: StringKey) -> &'static str {
             "Type 'yes' to confirm permanent deletion of tenant {tid}:"
         }
         // Observability commands (REQ-OBS-007).
-        StringKey::CliHelpObservability => {
-            "Observability: process-local metrics (no HTTP)."
-        }
+        StringKey::CliHelpObservability => "Observability: process-local metrics (no HTTP).",
         StringKey::CliHelpObservabilityMetrics => {
             "Dump the metrics registry as Prometheus text (stdout or MEMENTO_METRICS_FILE)."
         }

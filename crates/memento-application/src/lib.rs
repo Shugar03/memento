@@ -619,11 +619,15 @@ mod metrics_tests {
 
         let render = memento_observability::metrics::render();
         assert!(
-            render.contains(&format!("memento_tenant_open_total{{tenant_id=\"{tenant}\"}} 1")),
+            render.contains(&format!(
+                "memento_tenant_open_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
             "tenant_open counter recorded: {render}"
         );
         assert!(
-            render.contains(&format!("memento_pre_warm_total{{tenant_id=\"{tenant}\"}} 1")),
+            render.contains(&format!(
+                "memento_pre_warm_total{{tenant_id=\"{tenant}\"}} 1"
+            )),
             "pre_warm counter recorded: {render}"
         );
 
