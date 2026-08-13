@@ -653,11 +653,7 @@ fn tracing_on_warn_stderr_never_stdout() {
         .args(["health"])
         .output()
         .expect("run health");
-    assert!(
-        out.status.success(),
-        "health ok: {:?}",
-        out.status.code()
-    );
+    assert!(out.status.success(), "health ok: {:?}", out.status.code());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.is_empty(),

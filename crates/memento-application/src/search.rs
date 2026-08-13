@@ -831,12 +831,10 @@ mod tests {
         let app = corpus_app(&ts).await;
 
         // Ingest first: the span must record the chore id it generates.
-        let (res, lines) = capture_tracing(
-            app.ingest_text(
-                &ts.ctx(),
-                text_request("La memoria es la facultad de recordar las cosas pasadas."),
-            ),
-        )
+        let (res, lines) = capture_tracing(app.ingest_text(
+            &ts.ctx(),
+            text_request("La memoria es la facultad de recordar las cosas pasadas."),
+        ))
         .await;
         let res = res.expect("ingest ok");
         let chore_id = res.chore_id.expect("chore id returned").to_string();
@@ -851,7 +849,9 @@ mod tests {
         let closes = span_events(&lines, "ingest", "close", &tenant);
         assert_eq!(closes.len(), 1, "one ingest span closes: {lines:?}");
         assert_eq!(
-            closes[0]["span"]["chore_id"].as_str().expect("recorded chore id"),
+            closes[0]["span"]["chore_id"]
+                .as_str()
+                .expect("recorded chore id"),
             chore_id,
             "chore_id recorded before the span closes"
         );

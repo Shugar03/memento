@@ -135,7 +135,8 @@ impl AppService {
                 let bonus = if records.is_empty() {
                     0.0
                 } else {
-                    let mean: f32 = records.iter().map(|r| r.score).sum::<f32>() / records.len() as f32;
+                    let mean: f32 =
+                        records.iter().map(|r| r.score).sum::<f32>() / records.len() as f32;
                     (mean * FEEDBACK_BONUS_MAX).clamp(0.0, FEEDBACK_BONUS_MAX)
                 };
                 let tokens = self.chunker.token_count(&hit.text);
