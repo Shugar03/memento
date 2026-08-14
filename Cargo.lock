@@ -4348,6 +4348,7 @@ dependencies = [
  "memento-tenant",
  "memento-testkit",
  "rand 0.10.2",
+ "rand_core 0.6.4",
  "rmcp",
  "schemars 1.2.2",
  "serde",

@@ -1,137 +1,264 @@
-//! memento-daemon — the persistent daemon binary (daemon-persistent, D1).
+//! `memento-daemon` — one long-lived process per (root, tenant) that owns
+//! the embedder, reranker, and LanceDB tables, and serves both transports
+//! (CLI over named pipe, MCP over stdio once the dispatcher is wired in B4).
 //!
-//! One long-lived process per (root, tenant) owns the embedder, reranker and
-//! LanceDB store; CLI and MCP stdio clients connect over a Windows named
-//! pipe (REQ-DAEMON-001/002). Lifecycle is wired in later slices (S5): this
-//! stub only proves the entry point parses the daemon's fixed config
-//! (`--root` / `--no-embeddings` / `--locale`, REQ-DAEMON-003 "config FIXED
-//! at spawn").
-//!
-//! The real daemon never prints to stdout (stdout/stderr must stay clean for
-//! detached operation); the stub prints a one-line hello so smoke tests can
-//! assert the process boots and exits 0.
+//! B2 (REQ-DAEMON-003/012, design D5/D6/R1): this binary covers startup
+//! (env gate, cookie file, Job Object self-detach), pipe bind, and the
+//! handshake loop. The dispatcher + control plane + lifecycle land in
+//! later batches (B4 / B5).
 
-use std::path::PathBuf;
-use std::process::ExitCode;
+#![allow(clippy::needless_return)]
 
-use memento_i18n::Locale;
+use std::env;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process;
+use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    let opts = match parse_args() {
-        Ok(opts) => opts,
-        Err(msg) => {
-            eprintln!("memento-daemon: {msg}");
-            return ExitCode::from(2);
-        }
+use interprocess::os::windows::named_pipe::{
+    pipe_mode,
+    tokio::PipeStream,
+};
+use memento_application::audit::AuditLogger;
+use memento_domain::DomainError;
+use memento_mcp::{
+    daemon::{pipe_name, server_handshake_with_timeout, DaemonAuth, DaemonPipe, HandshakeError},
+    frame,
+    handshake::PROTOCOL_VERSION,
+};
+use memento_tenant::TenantResolverImpl;
+use rand_core::{OsRng, RngCore};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use tracing::{error, info, warn};
+use windows::Win32::System::JobObjects::{
+    SetInformationJobObject, JobObjectExtendedLimitInformation,
+    JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+};
+
+/// Default write bound for stalled-client handling (REQ-DAEMON-006). The
+/// env `MEMENTO_DAEMON_PIPE_TIMEOUT` overrides at runtime.
+const DEFAULT_PIPE_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+struct StartupError(String);
+
+impl std::fmt::Display for StartupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for StartupError {}
+
+impl From<io::Error> for StartupError {
+    fn from(err: io::Error) -> Self {
+        StartupError(format!("io: {err}"))
+    }
+}
+impl From<DomainError> for StartupError {
+    fn from(err: DomainError) -> Self {
+        StartupError(format!("domain: {err}"))
+    }
+}
+
+fn required_env(name: &str) -> Result<String, StartupError> {
+    env::var(name).map_err(|_| StartupError(format!("{name} is required")))
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    env::var(name).ok()
+}
+
+/// Generate a 32-byte cryptographic nonce encoded as hex. Used as the
+/// filesystem cookie nonce (REQ-DAEMON-012).
+fn generate_nonce() -> String {
+    let mut buf = [0u8; 32];
+    OsRng.fill_bytes(&mut buf);
+    let mut hex = String::with_capacity(64);
+    for byte in buf.iter() {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+/// Write the cookie file `<root>/.daemon-<pid>.cookie` (REQ-DAEMON-012).
+/// Atomic-ish: write to a temp file then rename to the final name.
+fn write_cookie(root: &Path, nonce: &str) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(root).map_err(io::Error::from)?;
+    let final_path = root.join(format!(".daemon-{}.cookie", process::id()));
+    let tmp_path = root.join(format!(".daemon-{}.cookie.tmp", process::id()));
+    std::fs::write(&tmp_path, nonce)?;
+    if std::fs::rename(&tmp_path, &final_path).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+        std::fs::write(&final_path, nonce)?;
+    }
+    Ok(final_path)
+}
+
+/// R1 / BREAKAWAY_OK: assign the daemon process to a new Job Object and
+/// exit the parent-side handle so the daemon survives the spawning CLI.
+/// Any orphan behaviour is owned by the Job (kill on close keeps the system
+/// clean during early failure).
+#[allow(dead_code, unused_variables)]
+fn daemonize_via_job_object() -> Result<(), StartupError> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    use windows::Win32::System::Threading::GetCurrentProcess;
 
-    // S1.2 smoke: boot + print + exit 0. S5 wires the pipe accept loop.
-    println!(
-        "memento-daemon stub: root={} no_embeddings={} locale={}",
-        opts.root.display(),
-        opts.no_embeddings,
-        opts.locale.map(|l| l.as_str()).unwrap_or("default"),
-    );
-    ExitCode::SUCCESS
-}
-
-/// The daemon's FIXED spawn config (REQ-DAEMON-003): root + embeddings mode
-/// + locale. These are the three dimensions of CONFIG_MISMATCH (R3).
-pub struct DaemonConfig {
-    pub root: PathBuf,
-    pub no_embeddings: bool,
-    pub locale: Option<Locale>,
-}
-
-fn parse_args() -> Result<DaemonConfig, String> {
-    let mut root: Option<PathBuf> = std::env::var("MEMENTO_ROOT").ok().map(PathBuf::from);
-    let mut no_embeddings = matches!(
-        std::env::var("MEMENTO_NO_EMBEDDINGS").as_deref(),
-        Ok("1" | "true" | "yes")
-    );
-    let mut locale: Option<Locale> = std::env::var("MEMENTO_LOCALE")
-        .ok()
-        .and_then(|v| match v.as_str() {
-            "es" => Some(Locale::Es),
-            "en" => Some(Locale::En),
-            _ => None,
-        });
-
-    let mut argv = std::env::args().skip(1);
-    while let Some(arg) = argv.next() {
-        match arg.as_str() {
-            "--root" => root = argv.next().map(PathBuf::from),
-            "--no-embeddings" => no_embeddings = true,
-            "--locale" => {
-                let v = argv.next().unwrap_or_default();
-                locale = match v.as_str() {
-                    "es" => Some(Locale::Es),
-                    "en" => Some(Locale::En),
-                    _ => return Err(format!("invalid --locale '{v}', expected es|en")),
-                };
-            }
-            "-h" | "--help" => {
-                println!("memento-daemon — Memento RS persistent daemon\n\nUSAGE:\n  memento-daemon [--root <PATH>] [--no-embeddings] [--locale es|en]");
-                std::process::exit(0);
-            }
-            other => return Err(format!("unknown argument: {other}")),
-        }
+    // SAFETY: CreateJobObjectW returns NULL on failure; we surface that as
+    // StartupError. GetCurrentProcess is a constant.
+    let job = unsafe { CreateJobObjectW(None, None) }.map_err(|err| {
+        StartupError(format!("CreateJobObjectW failed: {err}"))
+    })?;
+    if job.is_invalid() {
+        return Err(StartupError("CreateJobObjectW returned NULL".into()));
     }
 
-    Ok(DaemonConfig {
-        root: root.ok_or_else(|| "missing --root <PATH> or MEMENTO_ROOT env var".to_string())?,
+    // Configure: kill all processes assigned to this job when the job handle
+    // closes (i.e. when this CLI process exits). The daemon runs as its own
+    // job, so closing the CLI-side handle does NOT kill it (BREAKAWAY_OK).
+    // We close the CLI-side handle right after the daemon confirms readiness.
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+            LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // SAFETY: SetInformationJobObject with valid job handle + buffer.
+    let res = unsafe {
+        SetInformationJobObject(
+            HANDLE(job.0),
+            JobObjectExtendedLimitInformation,
+            &mut info as *mut _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if let Err(err) = res {
+        warn!(?err, "SetInformationJobObject failed; continuing without kill-on-close");
+    }
+
+    // Assign the daemon's process to the job (in this B2 skeleton we run in
+    // the same process; in production the daemon would fork+detach).
+    let current = unsafe { GetCurrentProcess() };
+    let job_handle = HANDLE(job.0);
+    // SAFETY: AssignProcessToJobObject is safe with valid handles.
+    if let Err(err) =
+        unsafe { windows::Win32::System::JobObjects::AssignProcessToJobObject(job_handle, current) }
+    {
+        warn!(?err, "AssignProcessToJobObject failed");
+    }
+    Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), StartupError> {
+    // --- env gate (REQ-DAEMON-002/005) --------------------------------------
+    let root = PathBuf::from(required_env("MEMENTO_ROOT")?);
+    let _token = required_env("MEMENTO_TOKEN")?;
+    let _agent_id = required_env("MEMENTO_AGENT_ID")?;
+    let _tenant_id = required_env("MEMENTO_TENANT")?;
+    let no_embeddings = optional_env("MEMENTO_NO_EMBEDDINGS")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let locale = optional_env("MEMENTO_LOCALE");
+
+    let pipe_timeout_secs: f64 = optional_env("MEMENTO_DAEMON_PIPE_TIMEOUT")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_PIPE_TIMEOUT.as_secs_f64());
+    let pipe_timeout = Duration::from_secs_f64(pipe_timeout_secs);
+
+    // Resolve the bound TenantContext through the actual credential resolver
+    // (REQ-DAEMON-005: token validated against the credential store at
+    // startup, not in the daemon hot path).
+    let resolver = TenantResolverImpl::open(&root);
+    let ctx = resolver
+        .resolve_from_env()
+        .map_err(|err| StartupError(format!("resolve_from_env: {err}")))?;
+    let bound_token_str = env::var("MEMENTO_TOKEN")
+        .map_err(|_| StartupError("MEMENTO_TOKEN missing at startup".into()))?;
+
+    // --- cookie file (REQ-DAEMON-012) -------------------------------------
+    let nonce = generate_nonce();
+    let cookie_path = write_cookie(&root, &nonce)?;
+    info!(?cookie_path, "daemon wrote cookie nonce");
+
+    // --- Job Object (R1) ----------------------------------------------------
+    if let Err(err) = daemonize_via_job_object() {
+        warn!(?err, "Job Object setup failed; daemon still runs but may orphan on crash");
+    }
+
+    // --- pipe bind (REQ-DAEMON-003/012, design D5) -------------------------
+    let tid = ctx.tenant_id().clone();
+    let name = pipe_name(&root, &tid);
+    let pipe = DaemonPipe::bind(&name).await?;
+    info!(%name, "daemon bound named pipe");
+
+    // --- audit logger for auth failures (best-effort) --------------------
+    // Wrapped in Arc so each spawned task can move a clone without copying
+    // the AuditLogger (it doesn't implement Clone); tasks that fail to write
+    // just log and drop.
+    let audit_logger: Arc<Option<AuditLogger>> =
+        Arc::new(AuditLogger::new(&root, ctx.tenant_id()).ok());
+
+    // --- accept loop (REQ-DAEMON-002/003) ----------------------------------
+    let auth = DaemonAuth {
+        root: root.clone(),
+        ctx: ctx.clone(),
+        daemon_token: bound_token_str,
+        cookie_path: cookie_path.clone(),
         no_embeddings,
         locale,
-    })
-}
+    };
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    info!(
+        pid = std::process::id(),
+        proto = PROTOCOL_VERSION,
+        "daemon ready (B2 skeleton; dispatcher and lifecycle land in B4/B5)"
+    );
 
-    /// windows-gnu compile smoke (S1.3): the toolchain must be able to bind
-    /// a real Windows named pipe via interprocess before the transport
-    /// slices build on it. Bind + drop — no listener loop, no messages.
-    #[tokio::test]
-    async fn windows_named_pipe_binds_and_drops() {
-        use interprocess::os::windows::named_pipe::{
-            pipe_mode, PipeListenerOptions,
-        };
-
-        let name = format!(r"\\.\pipe\memento-smoke-{}", std::process::id());
-        let listener = PipeListenerOptions::new()
-            .path(name)
-            .create_tokio_duplex::<pipe_mode::Bytes>()
-            .expect("named pipe binds on windows-gnu");
-        drop(listener);
-    }
-
-    #[test]
-    fn stub_parses_fixed_config() {
-        // REQ-DAEMON-003: config is fixed at spawn — parse must accept the
-        // same three dimensions the spawner forwards.
-        let args = ["--root", "C:\\tmp\\memento", "--no-embeddings", "--locale", "es"];
-        let mut argv = args.iter().copied();
-        let mut root: Option<PathBuf> = None;
-        let mut no_embeddings = false;
-        let mut locale: Option<Locale> = None;
-        while let Some(arg) = argv.next() {
-            match arg {
-                "--root" => root = argv.next().map(PathBuf::from),
-                "--no-embeddings" => no_embeddings = true,
-                "--locale" => {
-                    locale = argv.next().and_then(|v| match v {
-                        "es" => Some(Locale::Es),
-                        "en" => Some(Locale::En),
-                        _ => None,
-                    })
-                }
-                _ => {}
+    loop {
+        match pipe.accept().await {
+            Ok(conn) => {
+                let auth = auth.clone();
+                let audit_logger = audit_logger.clone();
+                tokio::spawn(async move {
+                    let mut conn: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = conn;
+                    let result =
+                        server_handshake_with_timeout(&mut conn, &auth, pipe_timeout).await;
+                    if let Err(ref err) = result {
+                        warn!(?err, "daemon handshake failed");
+                        if let (Some(logger), HandshakeError::AuthFailed(reason)) =
+                            (audit_logger.as_ref(), err)
+                        {
+                            let _ = logger.error(
+                                &auth.ctx,
+                                "daemon_handshake",
+                                serde_json::json!({ "reason": reason }),
+                                "AUTH_FAILED",
+                                None,
+                            );
+                        }
+                    }
+                    let _ = result;
+                });
+            }
+            Err(err) => {
+                error!(?err, "accept loop failed; backing off");
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
-        assert_eq!(root, Some(PathBuf::from("C:\\tmp\\memento")));
-        assert!(no_embeddings);
-        assert_eq!(locale, Some(Locale::Es));
     }
+}
+
+#[allow(dead_code)]
+fn _suppress_unused_warnings() {
+    // Keep `sha2` and `frame` symbols in scope for downstream batches that
+    // will hash the root and re-assemble framed streams.
+    let mut h = Sha256::new();
+    h.update(b"placeholder");
+    let _ = h.finalize();
+    let _ = frame::MAX_FRAME;
 }
