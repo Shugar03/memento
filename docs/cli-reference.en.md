@@ -7,7 +7,27 @@ All subcommands share:
 - `--json` — structured output `{code, message, detail, exit_code}` on
   stderr.
 - `--locale <es|en>` — force help / message language.
+- `--no-daemon` — force the pre-daemon one-shot path for this invocation
+  (mirrors `MEMENTO_NO_DAEMON=1`; REQ-DAEMON-004).
 - `MEMENTO_TOKEN`, `MEMENTO_AGENT_ID` — tenant credentials.
+
+## `memento daemon`
+
+Runs delegable commands (ingest, search, get-chunk, feedback, delete,
+context-fit, code, stats, health, tenant rotate-token|delete|retention|
+export|backup|sweep) through a long-lived per-(root,tenant) daemon process
+over a Windows named pipe; the CLI never opens the store or loads the model
+itself (REQ-DAEMON-002). `MEMENTO_NO_DAEMON=1` or `--no-daemon` reverts to
+the standalone one-shot path.
+
+| Subcommand  | Description                                          |
+|-------------|------------------------------------------------------|
+| `start`     | Ensure a daemon runs for the configured (root, tenant); idempotent — reports the existing PID. No model load. |
+| `stop`      | Cooperative `sys.shutdown` over the pipe; force-kill after a bounded grace window. Leaves zero daemon processes. |
+| `status`    | Report PID, uptime, bound tenant, capabilities, spawn config and pipe name. Always exits 0 (a missing daemon is `daemon_unavailable`, a disabled one is `daemon_disabled`). |
+
+See [ops.en.md](ops.en.md) § "Daemon mode" for lifecycle, pipe-name hashing
+and worker/restore coexistence.
 
 Exit codes (REQ-CL-005) live on `DomainError::exit_code` and are shared
 with the MCP server (REQ-MS-005).
