@@ -1,8 +1,12 @@
 //! Daemon command dispatcher (REQ-DAEMON-002, design D4).
 //!
-//! B4 skeleton: routes every accepted pipe request to either a `sys.*`
-//! control path or an MCP tool. `sys.*` just logs in this batch — B5 wires
-//! the lifecycle + AppService integration (REQ-DAEMON-003/009/010/013).
+//! B4 skeleton routes every accepted pipe request to either a `sys.*`
+//! control path or an MCP tool. B5 wires the `sys.*` bodies (REQ-DAEMON-003
+//! / 009 / 010 / 013, design R1 / R2 / R5 / R7): the dispatcher now owns a
+//! [`DaemonState`] that holds the bound `AppService` behind a `Mutex`,
+//! preserving the embedder Arc and the 100 k-entry query-embed cache cap
+//! across quiesce/resume cycles (R2). mcp.* calls stay as routing markers
+//! in B5 — the AppService plumbing for them lands in B7.
 //!
 //! ## Wire envelope
 //!
@@ -13,19 +17,28 @@
 //!
 //! ## Boundary
 //!
-//! The dispatcher does NOT own an `AppService` — that binding lands in B5.
-//! Today every branch returns a JSON marker that proves the dispatch
-//! reached the right path; the bodies (dropping the store handle, rendering
-//! Prometheus text, calling into the application service, …) come in B5.
+//! The dispatcher does NOT own an `AppService` directly — the bound
+//! application service lives inside [`DaemonState::app`] (a `Mutex<Option<_>>`)
+//! and is rebuilt on `sys.resume`. The shared adapter handles
+//! (parse boundary, embedder Arc, reranker Arc, clock Arc) are stored
+//! outside the `Mutex` so quiesce drops only the heavy `LanceStore` +
+//! `AuditLogger` handles (R2).
 //!
 //! ## Role gating
 //!
 //! REQ-DAEMON-012's role gate (`cli|mcp-proxy`, with `sys.*` reserved for
-//! `cli`) lives one level above the dispatcher and is out of scope for B4:
-//! the daemon's accept loop will consult [`Role`](crate::handshake::Role)
-//! before handing anything to [`dispatch_command`].
+//! `cli`) lives one level above the dispatcher and is unchanged by B5:
+//! the daemon's accept loop consults [`Role`](crate::handshake::Role)
+//! before handing anything to [`dispatch_command_with_state`].
 
-use memento_domain::DomainError;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Utc};
+use memento_application::{AppService, Clock, SystemClock};
+use memento_domain::{DomainError, TenantContext};
+use memento_ports::{EmbedPort, ParsePort, RerankPort};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -150,6 +163,280 @@ fn sys_name(s: SysCommand) -> &'static str {
         SysCommand::Metrics => "metrics",
         SysCommand::Shutdown => "shutdown",
     }
+}
+
+// ---- B5: daemon-owned state + sys.* bodies --------------------------------
+
+/// The mutable process state that every `sys.*` branch reads or mutates
+/// (REQ-DAEMON-009/010/013, design R2). One `DaemonState` is owned by the
+/// daemon's accept loop; every connection's request runs through
+/// [`dispatch_command_with_state`] with a borrow.
+///
+/// `app` is `Mutex<Option<AppService>>` so the heavy handles
+/// (`LanceStore` + `AuditLogger`) can be dropped on `sys.quiesce` and
+/// rebuilt on `sys.resume` (R2). The adapter handles (parse, embedder,
+/// reranker, clock) live OUTSIDE the mutex — they are cheap Arcs that
+/// survive quiesce so the rebuild does not reload the embedder.
+///
+/// `shutdown` is the cooperative exit flag for `sys.shutdown` (REQ-DAEMON-013,
+/// R7): the dispatcher sets it; the accept loop in `memento-daemon` polls it
+/// between accepts. `started_at` is stamped at construction so `status`
+/// answers can render uptime (REQ-DAEMON-007).
+pub struct DaemonState {
+    /// Storage root (REQ-DAEMON-003 / design D8).
+    pub root: PathBuf,
+    /// The bound tenant context (REQ-TA-001/002 — preserved across cycles).
+    pub ctx: TenantContext,
+    /// Parse boundary (cheap Arc — survives quiesce).
+    pub parse: Arc<dyn ParsePort>,
+    /// Embedder Arc (preserved across quiesce per R2: the embedder keeps
+    /// its loaded model, so resume reuses the existing session).
+    pub embedder: Option<Arc<dyn EmbedPort>>,
+    /// Optional cross-encoder reranker (A1) — re-attached on resume.
+    pub reranker: Option<Arc<dyn RerankPort>>,
+    /// Injectable clock (REQ-ML-003, design D5).
+    pub clock: Arc<dyn Clock>,
+    /// The bound application service. `None` after `sys.quiesce`.
+    pub app: Mutex<Option<AppService>>,
+    /// Wall-clock instant the daemon became ready (REQ-DAEMON-007 `status`).
+    pub started_at: DateTime<Utc>,
+    /// Cooperative shutdown flag (REQ-DAEMON-013). Set by `sys.shutdown`;
+    /// polled by the accept loop in `memento-daemon`.
+    pub shutdown: Arc<AtomicBool>,
+}
+
+impl DaemonState {
+    /// Build a fresh state with an already-open `AppService`. The caller
+    /// owns the resolve-from-env + open flow (the same pattern as
+    /// `McpServer::startup`); the dispatcher only owns the wire side.
+    pub fn new(
+        root: PathBuf,
+        ctx: TenantContext,
+        parse: Arc<dyn ParsePort>,
+        embedder: Option<Arc<dyn EmbedPort>>,
+        reranker: Option<Arc<dyn RerankPort>>,
+        clock: Arc<dyn Clock>,
+        initial_app: AppService,
+    ) -> Self {
+        Self {
+            root,
+            ctx,
+            parse,
+            embedder,
+            reranker,
+            clock,
+            app: Mutex::new(Some(initial_app)),
+            started_at: Utc::now(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Test-only constructor that mirrors the production shape (an
+    /// already-open `AppService`) but uses the real `SystemClock` and
+    /// `started_at = Utc::now()` so tests never depend on wall time for
+    /// correctness — only the timestamp on responses.
+    #[cfg(test)]
+    pub fn for_tests(
+        root: PathBuf,
+        ctx: TenantContext,
+        parse: Arc<dyn ParsePort>,
+        embedder: Option<Arc<dyn EmbedPort>>,
+        reranker: Option<Arc<dyn RerankPort>>,
+        initial_app: AppService,
+    ) -> Self {
+        Self::new(
+            root,
+            ctx,
+            parse,
+            embedder,
+            reranker,
+            Arc::new(SystemClock),
+            initial_app,
+        )
+    }
+
+    /// Whether the cooperative shutdown flag has been raised.
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
+
+    /// Raise the cooperative shutdown flag. The accept loop in
+    /// `memento-daemon` is responsible for breaking and `process::exit`-ing
+    /// (the dispatcher is single-shot per request and must not race the
+    /// listen loop).
+    pub fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+    }
+
+    /// Whether the bound application service is currently open
+    /// (i.e. `sys.quiesce` has not dropped it).
+    pub fn app_is_open(&self) -> bool {
+        self.app.lock().expect("app lock").is_some()
+    }
+}
+
+/// The wire envelope returned by [`dispatch_command_with_state`]: every
+/// `sys.*` branch runs real lifecycle work in B5; the `mcp.*` branch still
+/// returns the B4 routing marker (the mcp body wiring lands in B7 once the
+/// daemon's accept loop also routes the per-tool AppService calls).
+///
+/// `tracing::info!` records the dispatch path so observability spans line
+/// up with the audit log; the dispatcher's signal is always observable in
+/// `RUST_LOG` even when `MEMENTO_METRICS=0`.
+pub async fn dispatch_command_with_state(
+    state: &DaemonState,
+    cmd: Command,
+) -> Result<Value, DomainError> {
+    let path = cmd.path();
+    tracing::info!(
+        dispatch = %path,
+        "dispatch_command_with_state (B5 sys.* wired; mcp.* stays as routing marker)"
+    );
+    match cmd {
+        Command::Sys(sys) => dispatch_sys_with_state(state, sys).await,
+        Command::Mcp(mcp) => dispatch_mcp(mcp),
+    }
+}
+
+async fn dispatch_sys_with_state(
+    state: &DaemonState,
+    sys: SysCommand,
+) -> Result<Value, DomainError> {
+    match sys {
+        SysCommand::Quiesce => sys_quiesce(state),
+        SysCommand::Resume => sys_resume(state).await,
+        SysCommand::Metrics => Ok(sys_metrics(state)),
+        SysCommand::Shutdown => Ok(sys_shutdown(state)),
+    }
+}
+
+/// `sys.quiesce` (REQ-DAEMON-009, R2): drop the bound `AppService`
+/// (releasing `LanceStore` + `AuditLogger` handles). The shared adapter
+/// Arcs (parse, embedder, reranker, clock) stay — only the heavy
+/// handles die. Idempotent: a second quiesce reports `already_quiesced`
+/// without touching the (already empty) slot.
+fn sys_quiesce(state: &DaemonState) -> Result<Value, DomainError> {
+    let mut guard = state.app.lock().expect("app lock");
+    let ts = Utc::now();
+    let phase = if guard.is_some() {
+        *guard = None;
+        "quiesced"
+    } else {
+        "already_quiesced"
+    };
+    tracing::info!(
+        phase = phase,
+        tenant_id = %state.ctx.tenant_id(),
+        "sys.quiesce"
+    );
+    Ok(json!({
+        "status": "ok",
+        "phase": phase,
+        "ts": ts.to_rfc3339(),
+    }))
+}
+
+/// `sys.resume` (REQ-DAEMON-009, R2): rebuild the bound `AppService`
+/// from the preserved adapter Arcs. `LanceStore::ensure_schema` is a no-op
+/// on an already-migrated store (idempotent), so the rebuild does not
+/// duplicate schema work. Idempotent: a second resume against an open
+/// state reports `already_open` without reopening.
+///
+/// The lock is released before the (async) `AppService::open` call so the
+/// returned future stays `Send` (a `MutexGuard` is not `Send`, so holding
+/// it across `.await` would fail the `tokio::spawn` boundary that the
+/// daemon's accept loop uses).
+async fn sys_resume(state: &DaemonState) -> Result<Value, DomainError> {
+    let ts = Utc::now();
+    // Probe-and-bail: short-circuit when the slot is already populated.
+    {
+        let guard = state.app.lock().expect("app lock");
+        if guard.is_some() {
+            tracing::info!(
+                phase = "already_open",
+                tenant_id = %state.ctx.tenant_id(),
+                "sys.resume"
+            );
+            return Ok(json!({
+                "status": "ok",
+                "phase": "already_open",
+                "ts": ts.to_rfc3339(),
+            }));
+        }
+    }
+    // Open without holding the lock — the future is `Send` again.
+    let app = AppService::open(
+        &state.ctx,
+        &state.root,
+        state.parse.clone(),
+        state.embedder.clone(),
+        state.clock.clone(),
+    )
+    .await?;
+    let app = match &state.reranker {
+        Some(r) => app.with_reranker(r.clone()),
+        None => app,
+    };
+    // Re-acquire and double-check (another task may have opened it while
+    // we awaited) — the rebuild is idempotent so we just keep the
+    // existing one.
+    let phase = {
+        let mut guard = state.app.lock().expect("app lock");
+        if guard.is_some() {
+            "already_open".to_string()
+        } else {
+            *guard = Some(app);
+            "resumed".to_string()
+        }
+    };
+    tracing::info!(
+        phase = phase,
+        tenant_id = %state.ctx.tenant_id(),
+        "sys.resume"
+    );
+    Ok(json!({
+        "status": "ok",
+        "phase": phase,
+        "ts": ts.to_rfc3339(),
+    }))
+}
+
+/// `sys.metrics` (REQ-DAEMON-010, R5): render the daemon's Prometheus
+/// registry as text. The body is stamped with `# source=daemon pid=<n>`
+/// so the dump is unambiguously daemon-sourced (R5 reconciliation —
+/// archive must update REQ-OBS-007 wording). Empty body when
+/// `MEMENTO_METRICS` is unset (zero work, REQ-OBS-006).
+fn sys_metrics(state: &DaemonState) -> Value {
+    let body = memento_observability::metrics::render();
+    let pid = std::process::id();
+    let stamped = format!("# source=daemon pid={pid} tenant={}\n{body}", state.ctx.tenant_id());
+    tracing::info!(
+        bytes = body.len(),
+        "sys.metrics"
+    );
+    json!({
+        "status": "ok",
+        "format": "prometheus_text",
+        "body": stamped,
+        "ts": Utc::now().to_rfc3339(),
+    })
+}
+
+/// `sys.shutdown` (REQ-DAEMON-013, R7): raise the cooperative shutdown
+/// flag. The accept loop in `memento-daemon` polls [`DaemonState::shutdown_requested`]
+/// between accepts and `process::exit(0)`s once raised; the dispatcher
+/// itself does NOT race the listen loop.
+fn sys_shutdown(state: &DaemonState) -> Value {
+    state.request_shutdown();
+    tracing::info!(
+        pid = std::process::id(),
+        "sys.shutdown: cooperative exit requested"
+    );
+    json!({
+        "status": "ok",
+        "phase": "shutting_down",
+        "ts": Utc::now().to_rfc3339(),
+    })
 }
 
 fn mem_name(m: MemoryTool) -> &'static str {
@@ -525,5 +812,275 @@ mod tests {
             header as usize <= frame::MAX_FRAME,
             "len field ≤ 2 KiB: {header}"
         );
+    }
+
+    // ---- B5: sys.* bodies via dispatch_command_with_state ---------------------
+    //
+    // The B4 routing marker stays in `dispatch_sys` so the B4 tests above
+    // remain green. B5 wires the real lifecycle through
+    // `dispatch_command_with_state`, which carries a `DaemonState` borrow.
+    // The tests below build a real `DaemonState` against a `TempStore` so
+    // they exercise the actual `AppService::open` / drop / re-open path
+    // (R2 — `LanceStore` + `AuditLogger` handles released on quiesce,
+    // adapter Arcs preserved).
+
+    mod with_state_tests {
+        use super::*;
+        use memento_application::{AppService, SystemClock};
+        use memento_parse::ParseService;
+        use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
+        use memento_testkit::{StubEmbedPort, TempStore};
+        use std::time::Duration;
+
+        /// Build a real `DaemonState` against a temp root. The parse boundary
+        /// is the test fallback (no subprocess) and the embedder is the
+        /// deterministic stub — the same shape `McpServer::startup` uses in
+        /// tests, minus the reranker (left as `None` to keep the test cheap).
+        /// `SystemClock` is used because `TestClock`'s `Clock` impl lives
+        /// behind `#[cfg(test)]` inside `memento-application` and is not
+        /// visible from `memento-mcp`'s tests (cross-crate cfg(test) does not
+        /// propagate); the tests do not depend on wall time, only on the
+        /// timestamp stamped on the response.
+        async fn state_with_open_app() -> (TempStore, DaemonState) {
+            let ts = TempStore::new();
+            let parse: Arc<dyn ParsePort> = Arc::new(ParseService::new(AnydocConfig {
+                command: AnydocCommand {
+                    program: "never-invoked".into(),
+                    args: vec![],
+                    env: vec![],
+                },
+                timeout: Duration::from_secs(1),
+                stdout_limit: 1024,
+                staging_dir: std::env::temp_dir(),
+            }));
+            let embedder: Option<Arc<dyn EmbedPort>> =
+                Some(Arc::new(StubEmbedPort::default()));
+            let app = AppService::open(
+                &ts.ctx(),
+                ts.root(),
+                parse.clone(),
+                embedder.clone(),
+                Arc::new(SystemClock),
+            )
+            .await
+            .expect("test app opens");
+            let state = DaemonState::for_tests(
+                ts.root().to_path_buf(),
+                ts.ctx(),
+                parse,
+                embedder,
+                None,
+                app,
+            );
+            (ts, state)
+        }
+
+        #[tokio::test]
+        async fn quiesce_drops_app_service_and_responds_with_timestamp() {
+            // R2 / REQ-DAEMON-009: sys.quiesce drops the AppService (releasing
+            // LanceStore + AuditLogger handles) and returns an OK envelope
+            // stamped with the wall-clock timestamp.
+            let (_ts, state) = state_with_open_app().await;
+            assert!(state.app_is_open(), "baseline: app is open");
+
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Quiesce),
+            )
+            .await
+            .expect("quiesce ok");
+            assert_eq!(value["status"], "ok");
+            assert_eq!(value["phase"], "quiesced");
+            assert!(
+                value["ts"].as_str().is_some_and(str::is_empty) == false
+                    && value["ts"].is_string(),
+                "ts stamped: {value}"
+            );
+            assert!(
+                !state.app_is_open(),
+                "AppService dropped from state.app"
+            );
+        }
+
+        #[tokio::test]
+        async fn quiesce_is_idempotent_when_no_app_service() {
+            // R2: a second quiesce against an already-quiesced state reports
+            // `already_quiesced` without panicking (the Mutex<Option<_>> guard
+            // is empty on entry — no swap happens).
+            let (_ts, state) = state_with_open_app().await;
+            let _ = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Quiesce),
+            )
+            .await
+            .expect("first quiesce");
+
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Quiesce),
+            )
+            .await
+            .expect("second quiesce");
+            assert_eq!(value["status"], "ok");
+            assert_eq!(value["phase"], "already_quiesced");
+        }
+
+        #[tokio::test]
+        async fn resume_rebuilds_app_service_when_empty() {
+            // R2 / REQ-DAEMON-009: sys.resume reopens AppService using the
+            // preserved adapter Arcs (parse, embedder, clock). The embedder
+            // Arc stays the same — that's the R2 contract.
+            let (ts, state) = state_with_open_app().await;
+            let _ = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Quiesce),
+            )
+            .await
+            .expect("quiesce");
+
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Resume),
+            )
+            .await
+            .expect("resume");
+            assert_eq!(value["status"], "ok");
+            assert_eq!(value["phase"], "resumed");
+            assert!(state.app_is_open(), "AppService rebuilt");
+            // Audit log survives quiesce → resume: the log file persists
+            // across the cycle (append-only, REQ-OBS-008 contract).
+            let audit_path = ts
+                .root()
+                .join("logs")
+                .join(format!("{}.jsonl", ts.tenant_id()));
+            assert!(
+                audit_path.exists(),
+                "audit log file persists across quiesce/resume"
+            );
+        }
+
+        #[tokio::test]
+        async fn resume_is_idempotent_when_app_service_already_open() {
+            // R2: a second resume against an already-open state reports
+            // `already_open` without re-opening (avoids duplicate schema
+            // work and double pre-warm).
+            let (_ts, state) = state_with_open_app().await;
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Resume),
+            )
+            .await
+            .expect("resume against open state");
+            assert_eq!(value["status"], "ok");
+            assert_eq!(value["phase"], "already_open");
+            assert!(state.app_is_open());
+        }
+
+        #[tokio::test]
+        async fn metrics_renders_prometheus_text_with_daemon_stamp() {
+            // REQ-DAEMON-010 / R5: sys.metrics returns a JSON envelope whose
+            // body is the Prometheus text from the daemon registry, stamped
+            // with `# source=daemon pid=<n> tenant=<tid>`. With
+            // MEMENTO_METRICS unset the registry is empty (REQ-OBS-006) and
+            // the stamp is the only line — operators can still distinguish
+            // daemon-sourced from CLI-sourced dumps.
+            //
+            // The env-var mutation is scoped to a synchronous prelude so the
+            // `MutexGuard` never crosses the `.await` boundary (clippy's
+            // `await_holding_lock` lint).
+            static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            {
+                let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                // SAFETY: serialized by ENV_LOCK.
+                unsafe { std::env::remove_var("MEMENTO_METRICS") };
+            }
+
+            let (_ts, state) = state_with_open_app().await;
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Metrics),
+            )
+            .await
+            .expect("metrics");
+            assert_eq!(value["status"], "ok");
+            assert_eq!(value["format"], "prometheus_text");
+            let body = value["body"].as_str().expect("body string");
+            let pid_line = format!("# source=daemon pid={}", std::process::id());
+            assert!(
+                body.starts_with(&pid_line),
+                "stamp: {body}"
+            );
+            assert!(
+                body.contains(&format!("tenant={}", state.ctx.tenant_id())),
+                "tenant stamp: {body}"
+            );
+        }
+
+        #[tokio::test]
+        async fn shutdown_raises_flag_and_returns_ok() {
+            // REQ-DAEMON-013 / R7: sys.shutdown sets the cooperative exit
+            // flag (the accept loop in memento-daemon is responsible for
+            // breaking + process::exit). The dispatcher never races the
+            // listen loop.
+            let (_ts, state) = state_with_open_app().await;
+            assert!(!state.shutdown_requested(), "baseline: flag clear");
+
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Sys(SysCommand::Shutdown),
+            )
+            .await
+            .expect("shutdown");
+            assert_eq!(value["status"], "ok");
+            assert_eq!(value["phase"], "shutting_down");
+            assert!(state.shutdown_requested(), "flag raised");
+        }
+
+        #[tokio::test]
+        async fn mcp_branches_still_route_as_b4_marker() {
+            // B5 only wires sys.*; mcp.* stays as a routing marker (the
+            // mcp body wiring lands in B7). The shape stays frozen so the
+            // dispatcher's JSON envelope remains stable across batches.
+            let (_ts, state) = state_with_open_app().await;
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Mcp(McpCommand::Memory {
+                    tool: MemoryTool::Search,
+                }),
+            )
+            .await
+            .expect("mcp search routes");
+            assert_eq!(value["status"], "dispatched");
+            assert_eq!(value["phase"], "b4_skeleton");
+            assert_eq!(value["command"], "memory.search");
+        }
+
+        #[tokio::test]
+        async fn sys_command_roundtrips_through_dispatch_with_state() {
+            // Top-level routing test: every sys.* variant reaches the
+            // matching body under dispatch_command_with_state. The sys
+            // branches return real envelopes (ok); the mcp branches stay
+            // as the routing marker.
+            let (_ts, state) = state_with_open_app().await;
+            for sys in [
+                SysCommand::Quiesce,
+                SysCommand::Resume,
+                SysCommand::Metrics,
+                SysCommand::Shutdown,
+            ] {
+                let value = dispatch_command_with_state(
+                    &state,
+                    Command::Sys(sys),
+                )
+                .await
+                .expect("sys dispatch ok");
+                assert_eq!(
+                    value["status"], "ok",
+                    "sys.{:?} status: {value}", sys
+                );
+            }
+            // The shutdown flag survived the four sys calls.
+            assert!(state.shutdown_requested(), "shutdown sticky");
+        }
     }
 }
