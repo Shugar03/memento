@@ -207,55 +207,35 @@ impl DaemonClient {
             Ok(Err(err)) => return Err(DaemonError::Io(err)),
             Ok(Ok(stream)) => stream,
         };
-        // The pipe returns bytes-by-default (no message-mode framing). For the
-        // raw handshake we use the same framing helpers as the daemon.
-        Self::handshake(&mut conn, config).await?;
+        // Client-side handshake: write HELLO first, then read WELCOME.
+        // The pipe returns bytes-by-default (no message-mode framing) —
+        // we use the same framing helpers as the daemon.
+        Self::write_hello(&mut conn, config).await?;
         let welcome = Self::read_welcome(&mut conn, config).await?;
         Ok(Self { conn, welcome })
     }
 
-    /// Read HELLO from `stream`, validate proto+cookie+token, write WELCOME.
-    /// (Mirrors the server-side logic; duplicated here for the B3 roundtrip
-    /// test that simulates both ends on a `tokio::io::duplex` stream. The
-    /// server path in the daemon uses `memento_mcp::daemon::server_handshake`.)
-    async fn handshake(
+    /// Write the framed HELLO payload (B6: the production client side
+    /// of the handshake — `write_hello` then `read_welcome`). Mirrors
+    /// the daemon's expected wire shape (`proto`, `role`, `pid`, `ppid`,
+    /// `version`, `cookie`, `token`, `locale`, `no_embeddings`,
+    /// `staging`). The ppid is `0` for direct subprocess callers; the
+    /// B5 spawner injects the real value before forwarding.
+    ///
+    /// B6 fixes a latent bug: `DaemonClient::connect` previously called
+    /// a helper named `handshake` that did the server flow (read HELLO,
+    /// write WELCOME) instead of the client flow. The bug was masked
+    /// because no production test exercised `connect` end-to-end; the
+    /// B3 wire test simulated both sides manually. The
+    /// `tests/config_mismatch.rs` + `tests/observability_metrics_daemon.rs`
+    /// integration suites exercise the real pipe + this `write_hello`.
+    async fn write_hello(
         stream: &mut PipeStream<pipe_mode::Bytes, pipe_mode::Bytes>,
         config: &ClientConfig,
     ) -> Result<(), DaemonError> {
-        let payload = timeout(config.pipe_timeout, frame::read_message(stream))
-            .await
-            .map_err(|_| DaemonError::Timeout(config.pipe_timeout))?
-            .map_err(DaemonError::Io)?;
-        let hello: Hello = serde_json::from_slice(&payload)
-            .map_err(|err| DaemonError::Protocol(format!("HELLO is not valid JSON: {err}")))?;
-        if hello.proto != PROTOCOL_VERSION {
-            return Err(DaemonError::Protocol(format!(
-                "proto mismatch: client {}, server {PROTOCOL_VERSION}",
-                hello.proto
-            )));
-        }
-        let expected_cookie = match config.cookie_path() {
-            Ok(p) => std::fs::read_to_string(&p).unwrap_or_default().trim().to_string(),
-            Err(_) => String::new(),
-        };
-        if hello.cookie != expected_cookie {
-            return Err(DaemonError::AuthFailed("cookie mismatch".into()));
-        }
-        if hello.token != config.token {
-            return Err(DaemonError::AuthFailed("token mismatch".into()));
-        }
-        let welcome = Welcome {
-            proto: PROTOCOL_VERSION,
-            daemon_pid: std::process::id(),
-            tenant_id: config.tenant_id.clone(),
-            capabilities: vec![],
-            spawn: memento_mcp::handshake::SpawnConfig {
-                no_embeddings: config.no_embeddings,
-                locale: config.locale.clone(),
-            },
-        };
-        let payload = serde_json::to_vec(&welcome)
-            .map_err(|err| DaemonError::Protocol(format!("WELCOME serialization: {err}")))?;
+        let hello = config.hello(crate::transport::pipe_client::parent_pid());
+        let payload = serde_json::to_vec(&hello)
+            .map_err(|err| DaemonError::Protocol(format!("HELLO serialization: {err}")))?;
         timeout(config.pipe_timeout, frame::write_message(stream, &payload))
             .await
             .map_err(|_| DaemonError::Timeout(config.pipe_timeout))?
