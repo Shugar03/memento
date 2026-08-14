@@ -17,6 +17,12 @@ anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
+# daemon transport (daemon-persistent): named pipes + Job Objects + pipe-name
+# hashing (REQ-DAEMON-006/003/012).
+interprocess.workspace = true
+windows.workspace = true
+sha2.workspace = true
+rand.workspace = true
 
 memento-domain = { path = "../memento-domain" }
 memento-ports = { path = "../memento-ports" }
@@ -36,3 +42,7 @@ memento-okf = { path = "../memento-okf" }
 [[bin]]
 name = "memento-mcp-server"
 path = "src/main.rs"
+
+[[bin]]
+name = "memento-daemon"
+path = "src/bin/memento-daemon.rs"
