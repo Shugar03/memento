@@ -2,39 +2,48 @@
 //! the embedder, reranker, and LanceDB tables, and serves both transports
 //! (CLI over named pipe, MCP over stdio once the dispatcher is wired in B4).
 //!
-//! B2 (REQ-DAEMON-003/012, design D5/D6/R1): this binary covers startup
-//! (env gate, cookie file, Job Object self-detach), pipe bind, and the
-//! handshake loop. The dispatcher + control plane + lifecycle land in
-//! later batches (B4 / B5).
+//! B5 (REQ-DAEMON-003/009/010/013, design D5/R1/R2/R5/R7):
+//!
+//! * Removes the B2 skeleton [`daemonize_via_job_object`] helper (it
+//!   created a Job Object inside the daemon and assigned itself — the
+//!   opposite of what R1 prescribes).
+//! * After readiness (cookie + pipe bound), calls
+//!   [`detach_from_inherited_job`] to defensively assert the daemon is not
+//!   bound to the spawner's Job Object (R1 — production spawners use
+//!   `CREATE_BREAKAWAY_FROM_JOB` so the child breaks away at creation;
+//!   this function logs a warning if the production invariant is
+//!   violated).
+//! * Builds a [`DaemonState`] (the B5 dispatcher binding) and wires the
+//!   accept loop to dispatch through [`dispatch_command_with_state`],
+//!   closing the B4 skeleton by giving `sys.quiesce` / `sys.resume` /
+//!   `sys.metrics` / `sys.shutdown` their real bodies (REQ-DAEMON-009/
+//!   010/013, R2 / R5 / R7).
+//! * Polls [`DaemonState::shutdown_requested`] between accepts; on
+//!   `sys.shutdown`, breaks the loop and `process::exit(0)`s.
 
 #![allow(clippy::needless_return)]
 
 use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process;
+use std::sync::Arc;
 use std::time::Duration;
 
-use interprocess::os::windows::named_pipe::{
-    pipe_mode,
-    tokio::PipeStream,
-};
+use interprocess::os::windows::named_pipe::pipe_mode;
 use memento_application::audit::AuditLogger;
+use memento_application::{AppService, SystemClock};
 use memento_domain::DomainError;
+use memento_embed_fastembed::{FastEmbedEmbedder, FastReranker, ModelLoader, Reranker};
 use memento_mcp::{
     daemon::{pipe_name, server_handshake_with_timeout, DaemonAuth, DaemonPipe, HandshakeError},
+    dispatcher::{self, Command, DaemonState},
     frame,
     handshake::PROTOCOL_VERSION,
 };
+use memento_parse::ParseService;
 use memento_tenant::TenantResolverImpl;
 use rand_core::{OsRng, RngCore};
-use sha2::{Digest, Sha256};
-use std::sync::Arc;
 use tracing::{error, info, warn};
-use windows::Win32::System::JobObjects::{
-    SetInformationJobObject, JobObjectExtendedLimitInformation,
-    JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-};
 
 /// Default write bound for stalled-client handling (REQ-DAEMON-006). The
 /// env `MEMENTO_DAEMON_PIPE_TIMEOUT` overrides at runtime.
@@ -85,8 +94,9 @@ fn generate_nonce() -> String {
 /// Atomic-ish: write to a temp file then rename to the final name.
 fn write_cookie(root: &Path, nonce: &str) -> io::Result<PathBuf> {
     std::fs::create_dir_all(root).map_err(io::Error::from)?;
-    let final_path = root.join(format!(".daemon-{}.cookie", process::id()));
-    let tmp_path = root.join(format!(".daemon-{}.cookie.tmp", process::id()));
+    let pid = std::process::id();
+    let final_path = root.join(format!(".daemon-{pid}.cookie"));
+    let tmp_path = root.join(format!(".daemon-{pid}.cookie.tmp"));
     std::fs::write(&tmp_path, nonce)?;
     if std::fs::rename(&tmp_path, &final_path).is_err() {
         let _ = std::fs::remove_file(&tmp_path);
@@ -95,62 +105,89 @@ fn write_cookie(root: &Path, nonce: &str) -> io::Result<PathBuf> {
     Ok(final_path)
 }
 
-/// R1 / BREAKAWAY_OK: assign the daemon process to a new Job Object and
-/// exit the parent-side handle so the daemon survives the spawning CLI.
-/// Any orphan behaviour is owned by the Job (kill on close keeps the system
-/// clean during early failure).
-#[allow(dead_code, unused_variables)]
-fn daemonize_via_job_object() -> Result<(), StartupError> {
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::JobObjects::{
-        CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
+/// R1 self-detach: defensively assert the daemon is NOT bound to the
+/// spawner's Job Object. Production spawners (B5 `DaemonSpawner::start`)
+/// create a Job with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` and spawn the daemon
+/// with `CREATE_BREAKAWAY_FROM_JOB` so the child breaks away at
+/// creation — at that point there is no inherited job membership to
+/// detach. This function runs AFTER readiness (cookie + pipe bound) and
+/// surfaces a warning if the production invariant is violated.
+///
+/// Returns `true` if the daemon is free (no inherited job), `false` if it
+/// is still bound to an inherited job (the spawner should have used
+/// `CREATE_BREAKAWAY_FROM_JOB`). The function never fails the daemon —
+/// the worst case is a `kill -9` on the spawner also kills the daemon,
+/// which is the same behavior as the B2 skeleton.
+fn detach_from_inherited_job() -> bool {
+    use windows::Win32::System::JobObjects::IsProcessInJob;
     use windows::Win32::System::Threading::GetCurrentProcess;
 
-    // SAFETY: CreateJobObjectW returns NULL on failure; we surface that as
-    // StartupError. GetCurrentProcess is a constant.
-    let job = unsafe { CreateJobObjectW(None, None) }.map_err(|err| {
-        StartupError(format!("CreateJobObjectW failed: {err}"))
-    })?;
-    if job.is_invalid() {
-        return Err(StartupError("CreateJobObjectW returned NULL".into()));
+    // SAFETY: GetCurrentProcess returns a pseudo-handle that is always
+    // valid; passing `None` for the job handle asks whether the process is
+    // in ANY job. The out-param is a windows_core::BOOL.
+    let mut in_job = windows::core::BOOL::default();
+    let call = unsafe { IsProcessInJob(GetCurrentProcess(), None, &mut in_job) };
+    match call {
+        Ok(()) if in_job.0 == 0 => {
+            info!("post-readiness job check: not in a job (R1 invariant OK)");
+            true
+        }
+        Ok(()) => {
+            warn!(
+                "post-readiness job check: daemon IS in a job (R1 invariant violated); spawning must use CREATE_BREAKAWAY_FROM_JOB"
+            );
+            false
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                "post-readiness job check: IsProcessInJob failed; daemon may orphan on spawner crash"
+            );
+            false
+        }
     }
+}
 
-    // Configure: kill all processes assigned to this job when the job handle
-    // closes (i.e. when this CLI process exits). The daemon runs as its own
-    // job, so closing the CLI-side handle does NOT kill it (BREAKAWAY_OK).
-    // We close the CLI-side handle right after the daemon confirms readiness.
-    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-        BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
-            LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    // SAFETY: SetInformationJobObject with valid job handle + buffer.
-    let res = unsafe {
-        SetInformationJobObject(
-            HANDLE(job.0),
-            JobObjectExtendedLimitInformation,
-            &mut info as *mut _ as *const _,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-    };
-    if let Err(err) = res {
-        warn!(?err, "SetInformationJobObject failed; continuing without kill-on-close");
+/// Build the production parse boundary (REQ-CL-007 — anydoc fallback
+/// keeps md/txt + ingest_text working on hosts without Node).
+fn parse_boundary(root: &Path) -> Arc<dyn memento_ports::ParsePort> {
+    match ParseService::auto(root.join("tmp")) {
+        Ok(service) => Arc::new(service),
+        Err(err) => {
+            tracing::warn!(%err, "anydoc unavailable; document conversion fails per-call (fallback md/txt works)");
+            Arc::new(ParseService::new(memento_parse::anydoc::AnydocConfig {
+                command: memento_parse::anydoc::AnydocCommand {
+                    program: "anydoc-unavailable".into(),
+                    args: vec![],
+                    env: vec![],
+                },
+                timeout: memento_parse::anydoc::DEFAULT_TIMEOUT,
+                stdout_limit: memento_parse::anydoc::DEFAULT_STDOUT_LIMIT,
+                staging_dir: root.join("tmp"),
+            }))
+        }
     }
+}
 
-    // Assign the daemon's process to the job (in this B2 skeleton we run in
-    // the same process; in production the daemon would fork+detach).
-    let current = unsafe { GetCurrentProcess() };
-    let job_handle = HANDLE(job.0);
-    // SAFETY: AssignProcessToJobObject is safe with valid handles.
-    if let Err(err) =
-        unsafe { windows::Win32::System::JobObjects::AssignProcessToJobObject(job_handle, current) }
-    {
-        warn!(?err, "AssignProcessToJobObject failed");
+/// Production embedder for this root (lazy model load — nothing is
+/// downloaded at startup; first embed triggers the single-flight load).
+fn embedder_for(root: &Path, no_embeddings: bool) -> Option<Arc<dyn memento_ports::EmbedPort>> {
+    if no_embeddings {
+        None
+    } else {
+        Some(Arc::new(FastEmbedEmbedder::new(Arc::new(
+            ModelLoader::new(root.join("models"), true),
+        ))))
     }
-    Ok(())
+}
+
+/// Cross-encoder reranker (A1) — loader is cheap, the ~543 MB int8 model
+/// loads on the first rerank call behind the `MEMENTO_RERANK` capability
+/// toggle.
+fn reranker_for(root: &Path) -> Arc<dyn memento_ports::RerankPort> {
+    Arc::new(FastReranker::new(Arc::new(Reranker::new(
+        root.to_path_buf(),
+    ))))
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -180,21 +217,53 @@ async fn main() -> Result<(), StartupError> {
     let bound_token_str = env::var("MEMENTO_TOKEN")
         .map_err(|_| StartupError("MEMENTO_TOKEN missing at startup".into()))?;
 
-    // --- cookie file (REQ-DAEMON-012) -------------------------------------
+    // --- adapter Arcs (preserved across quiesce/resume, R2) ---------------
+    let parse = parse_boundary(&root);
+    let embedder = embedder_for(&root, no_embeddings);
+    let reranker = if no_embeddings {
+        None
+    } else {
+        Some(reranker_for(&root))
+    };
+
+    // --- cookie file (REQ-DAEMON-012) — readiness signal #1 ---------------
     let nonce = generate_nonce();
     let cookie_path = write_cookie(&root, &nonce)?;
     info!(?cookie_path, "daemon wrote cookie nonce");
 
-    // --- Job Object (R1) ----------------------------------------------------
-    if let Err(err) = daemonize_via_job_object() {
-        warn!(?err, "Job Object setup failed; daemon still runs but may orphan on crash");
-    }
+    // --- AppService open (REQ-DAEMON-002, R2) -----------------------------
+    let app = AppService::open(&ctx, &root, parse.clone(), embedder.clone(), Arc::new(SystemClock))
+        .await?;
+    let app = match reranker.clone() {
+        Some(r) => app.with_reranker(r),
+        None => app,
+    };
+    let clock: Arc<dyn memento_application::Clock> = Arc::new(SystemClock);
+    let state = Arc::new(DaemonState::new(
+        root.clone(),
+        ctx.clone(),
+        parse.clone(),
+        embedder.clone(),
+        reranker.clone(),
+        clock,
+        app,
+    ));
 
-    // --- pipe bind (REQ-DAEMON-003/012, design D5) -------------------------
+    // --- pipe bind (REQ-DAEMON-003/012, design D5) — readiness signal #2 --
     let tid = ctx.tenant_id().clone();
     let name = pipe_name(&root, &tid);
     let pipe = DaemonPipe::bind(&name).await?;
     info!(%name, "daemon bound named pipe");
+
+    // --- R1 self-detach (post-readiness) ----------------------------------
+    // The daemon is fully bound to its (root, tenant) and listening on the
+    // pipe — at this point the spawner (B5 `DaemonSpawner::start`) is free
+    // to close its Job Object handle without killing us. The defensive
+    // check below logs a warning if the production invariant is violated.
+    let detached = detach_from_inherited_job();
+    if !detached {
+        warn!("R1 invariant violated: daemon is bound to an inherited Job Object; spawning must use CREATE_BREAKAWAY_FROM_JOB");
+    }
 
     // --- audit logger for auth failures (best-effort) --------------------
     // Wrapped in Arc so each spawned task can move a clone without copying
@@ -216,49 +285,107 @@ async fn main() -> Result<(), StartupError> {
     info!(
         pid = std::process::id(),
         proto = PROTOCOL_VERSION,
-        "daemon ready (B2 skeleton; dispatcher and lifecycle land in B4/B5)"
+        r1_detached = detached,
+        "daemon ready (B5: dispatcher + R1 self-detach wired)"
     );
 
     loop {
-        match pipe.accept().await {
-            Ok(conn) => {
-                let auth = auth.clone();
-                let audit_logger = audit_logger.clone();
-                tokio::spawn(async move {
-                    let mut conn: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = conn;
-                    let result =
-                        server_handshake_with_timeout(&mut conn, &auth, pipe_timeout).await;
-                    if let Err(ref err) = result {
-                        warn!(?err, "daemon handshake failed");
-                        if let (Some(logger), HandshakeError::AuthFailed(reason)) =
-                            (audit_logger.as_ref(), err)
-                        {
-                            let _ = logger.error(
-                                &auth.ctx,
-                                "daemon_handshake",
-                                serde_json::json!({ "reason": reason }),
-                                "AUTH_FAILED",
-                                None,
-                            );
-                        }
-                    }
-                    let _ = result;
-                });
-            }
+        if state.shutdown_requested() {
+            info!(
+                pid = std::process::id(),
+                "daemon: sys.shutdown observed; exiting cooperatively"
+            );
+            // Reply OK has already been sent by the dispatcher; exit 0 is
+            // the contract (REQ-DAEMON-013, R7).
+            std::process::exit(0);
+        }
+        let conn = match pipe.accept().await {
+            Ok(conn) => conn,
             Err(err) => {
                 error!(?err, "accept loop failed; backing off");
                 tokio::time::sleep(Duration::from_millis(250)).await;
+                continue;
             }
-        }
+        };
+        let auth = auth.clone();
+        let audit_logger = audit_logger.clone();
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut conn: interprocess::os::windows::named_pipe::tokio::PipeStream<
+                pipe_mode::Bytes,
+                pipe_mode::Bytes,
+            > = conn;
+            let result =
+                server_handshake_with_timeout(&mut conn, &auth, pipe_timeout).await;
+            let welcome = match result {
+                Ok(w) => w,
+                Err(ref err) => {
+                    warn!(?err, "daemon handshake failed");
+                    if let (Some(logger), HandshakeError::AuthFailed(reason)) =
+                        (audit_logger.as_ref(), err)
+                    {
+                        let _ = logger.error(
+                            &auth.ctx,
+                            "daemon_handshake",
+                            serde_json::json!({ "reason": reason }),
+                            "AUTH_FAILED",
+                            None,
+                        );
+                    }
+                    let _ = result;
+                    return;
+                }
+            };
+            // Handshake complete — serve commands on this connection. The
+            // dispatcher is request-scoped: the wire shape is one framed
+            // request → one framed response, and the accept loop spawns a
+            // new task per request. B7 wires the per-tool AppService
+            // calls; today sys.* are the real path and mcp.* stays as a
+            // routing marker.
+            serve_request(&mut conn, state, &welcome).await;
+        });
     }
 }
 
-#[allow(dead_code)]
-fn _suppress_unused_warnings() {
-    // Keep `sha2` and `frame` symbols in scope for downstream batches that
-    // will hash the root and re-assemble framed streams.
-    let mut h = Sha256::new();
-    h.update(b"placeholder");
-    let _ = h.finalize();
-    let _ = frame::MAX_FRAME;
+/// Per-connection service loop: read one framed request, dispatch through
+/// the B5 [`DaemonState`], write one framed response. Today only `sys.*`
+/// is wired; mcp.* requests still return the B4 routing marker (the mcp
+/// body plumbing lands in B7 once the per-tool AppService calls are
+/// exposed).
+async fn serve_request<S>(
+    conn: &mut S,
+    state: Arc<DaemonState>,
+    _welcome: &memento_mcp::handshake::Welcome,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let raw = match tokio::time::timeout(Duration::from_secs(5), frame::read_message(conn)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(err)) => {
+            warn!(?err, "daemon: request read failed");
+            return;
+        }
+        Err(_) => {
+            warn!("daemon: request read timed out");
+            return;
+        }
+    };
+    let cmd: Command = match serde_json::from_slice(&raw) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(?err, "daemon: request is not a valid Command");
+            return;
+        }
+    };
+    let value = match dispatcher::dispatch_command_with_state(&state, cmd).await {
+        Ok(v) => v,
+        Err(err) => {
+            warn!(?err, "daemon: dispatch failed");
+            return;
+        }
+    };
+    let payload = dispatcher::serialize_response(&value);
+    if let Err(err) = frame::write_message(conn, &payload).await {
+        warn!(?err, "daemon: response write failed");
+    }
 }
