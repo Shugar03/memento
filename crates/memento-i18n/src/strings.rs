@@ -95,6 +95,7 @@ pub enum StringKey {
     CliHelpCodeDebug,
     CliHelpJson,
     CliHelpNoEmbeddings,
+    CliHelpNoDaemon,
     CliHelpRootArg,
     CliHelpLocaleArg,
     CliHelpQueryArg,
@@ -133,7 +134,7 @@ pub enum StringKey {
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 95] = [
+    pub const ALL: [StringKey; 96] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -197,6 +198,7 @@ impl StringKey {
         StringKey::CliHelpCodeDebug,
         StringKey::CliHelpJson,
         StringKey::CliHelpNoEmbeddings,
+        StringKey::CliHelpNoDaemon,
         StringKey::CliHelpRootArg,
         StringKey::CliHelpLocaleArg,
         StringKey::CliHelpQueryArg,
@@ -342,6 +344,7 @@ pub fn es(key: StringKey) -> &'static str {
         }
         StringKey::CliHelpJson => "Salida en JSON (REQ-CL-003).",
         StringKey::CliHelpNoEmbeddings => "Sin embeddings (REQ-MC-004).",
+        StringKey::CliHelpNoDaemon => "Desactiva el daemon persistente y usa el camino one-shot local (REQ-DAEMON-004).",
         StringKey::CliHelpRootArg => "Raíz de almacenamiento (por defecto ~/.memento).",
         StringKey::CliHelpLocaleArg => "Idioma de la interfaz: es | en.",
         StringKey::CliHelpQueryArg => "Consulta de búsqueda.",
@@ -491,6 +494,7 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpCodeDebug => "Index graph diagnostics (nodes, edges, integrity).",
         StringKey::CliHelpJson => "JSON output (REQ-CL-003).",
         StringKey::CliHelpNoEmbeddings => "No embeddings (REQ-MC-004).",
+        StringKey::CliHelpNoDaemon => "Disable the persistent daemon; run the one-shot in-process path (REQ-DAEMON-004).",
         StringKey::CliHelpRootArg => "Storage root (default ~/.memento).",
         StringKey::CliHelpLocaleArg => "Interface locale: es | en.",
         StringKey::CliHelpQueryArg => "Search query.",

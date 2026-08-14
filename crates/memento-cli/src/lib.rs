@@ -72,7 +72,10 @@ pub async fn run(matches: &ArgMatches, i18n: &I18n) -> Result<(), DomainError> {
         Some(("tenant", sub)) => commands::tenant::run(sub, &root, no_embeddings, i18n).await,
         // Process-local observability dump: no app open, no credentials
         // (REQ-OBS-007, design D7 — tenant-create bootstrap precedent).
-        Some(("observability", sub)) => commands::observability::run(sub),
+        // B6 (REQ-DAEMON-010, R5): the dispatcher is async because the
+        // daemon path sends `sys.metrics` over the named pipe; on any
+        // failure it falls back to the local dump.
+        Some(("observability", sub)) => commands::observability::run(sub).await,
         // Daemon control plane (REQ-DAEMON-007): no app open, never loads
         // models. B5: `start`/`stop` are real calls into
         // `DaemonSpawner::start/stop`; `status` pings the pipe.

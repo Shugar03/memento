@@ -17,6 +17,7 @@ pub fn build(i18n: &I18n) -> Command {
         .about(i18n.t(StringKey::CliHelpRoot))
         .arg(json_flag(i18n))
         .arg(no_embeddings_flag(i18n))
+        .arg(no_daemon_flag(i18n))
         .arg(root_arg(i18n))
         .arg(locale_arg(i18n))
         .subcommand(tenant_cmd(i18n))
@@ -49,6 +50,20 @@ fn no_embeddings_flag(i18n: &I18n) -> Arg {
         .global(true)
         .action(ArgAction::SetTrue)
         .help(i18n.t(StringKey::CliHelpNoEmbeddings))
+}
+
+/// `--no-daemon` (REQ-DAEMON-004, design D7): global, opt-in to the
+/// pre-change one-shot path. When set, [`crate::args::no_daemon_from_argv`]
+/// pre-scans argv (BEFORE clap parses) and sets
+/// `MEMENTO_NO_DAEMON=1` so every transport / spawner / startup check
+/// that already honors the env var short-circuits without touching the
+/// pipe.
+fn no_daemon_flag(i18n: &I18n) -> Arg {
+    Arg::new("no-daemon")
+        .long("no-daemon")
+        .global(true)
+        .action(ArgAction::SetTrue)
+        .help(i18n.t(StringKey::CliHelpNoDaemon))
 }
 
 fn root_arg(i18n: &I18n) -> Arg {
@@ -432,4 +447,37 @@ fn parse_locale(raw: &str) -> Locale {
         "en" | "english" => Locale::En,
         _ => Locale::Es,
     }
+}
+
+/// Pre-scan argv for `--no-daemon` (REQ-DAEMON-004, design D7) and
+/// mirror it as `MEMENTO_NO_DAEMON=1` BEFORE any other code reads the
+/// environment. Mirrors the pre-scan pattern used by
+/// [`locale_from_argv`] — the env gate has to be set before clap parses
+/// (the i18n help tree doesn't depend on it, but
+/// `startup::try_open` and `ClientConfig::from_env` do, and they get
+/// called from inside the async runtime once clap returns matches).
+///
+/// `MEMENTO_NO_DAEMON=1` already wins over the flag (it short-circuits
+/// the `ClientConfig::from_env` path), so this function is idempotent.
+/// Returns `true` when the flag was found on argv.
+///
+/// # Safety
+///
+/// Mutates process env. Safe because `#[tokio::main(flavor = "current_thread")]`
+/// means no worker threads are spawned before `main` returns control
+/// (the env mutation happens synchronously, before the runtime polls).
+pub fn no_daemon_from_argv() -> bool {
+    let mut found = false;
+    for arg in std::env::args().skip(1) {
+        if arg == "--no-daemon" || arg.starts_with("--no-daemon=") {
+            found = true;
+            break;
+        }
+    }
+    if found && std::env::var("MEMENTO_NO_DAEMON").ok().as_deref() != Some("1") {
+        // SAFETY: main runs single-threaded until the tokio runtime polls;
+        // no observer of `MEMENTO_NO_DAEMON` exists before this point.
+        unsafe { std::env::set_var("MEMENTO_NO_DAEMON", "1") };
+    }
+    found
 }
