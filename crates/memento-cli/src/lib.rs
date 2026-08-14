@@ -64,11 +64,15 @@ pub fn resolve_root(matches: &ArgMatches) -> Result<std::path::PathBuf, DomainEr
 pub async fn run(matches: &ArgMatches, i18n: &I18n) -> Result<(), DomainError> {
     let root = resolve_root(matches)?;
     let no_embeddings = matches.get_flag("no-embeddings");
+    let json = matches.get_flag("json");
     match matches.subcommand() {
         Some(("tenant", sub)) => commands::tenant::run(sub, &root, no_embeddings, i18n).await,
         // Process-local observability dump: no app open, no credentials
         // (REQ-OBS-007, design D7 — tenant-create bootstrap precedent).
         Some(("observability", sub)) => commands::observability::run(sub),
+        // Daemon control plane (REQ-DAEMON-007): no app open, never loads
+        // models. `start`/`stop` are stubs in B4; `status` pings the pipe.
+        Some(("daemon", sub)) => commands::daemon::run(sub, json).await,
         Some((
             name @ ("ingest" | "search" | "get-chunk" | "feedback" | "delete" | "context-fit"
             | "code" | "stats" | "health"),

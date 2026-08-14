@@ -30,6 +30,7 @@ pub fn build(i18n: &I18n) -> Command {
         .subcommand(stats_cmd(i18n))
         .subcommand(health_cmd(i18n))
         .subcommand(observability_cmd(i18n))
+        .subcommand(daemon_cmd(i18n))
 }
 
 // ---- global flags ----------------------------------------------------------
@@ -389,6 +390,19 @@ fn observability_cmd(i18n: &I18n) -> Command {
     Command::new("observability")
         .about(i18n.t(StringKey::CliHelpObservability))
         .subcommand(Command::new("metrics").about(i18n.t(StringKey::CliHelpObservabilityMetrics)))
+}
+
+// ---- daemon ------------------------------------------------------------------
+
+/// `daemon start|stop|status`: the persistent-daemon control plane
+/// (REQ-DAEMON-007, design D4). Never opens `AppService`; never loads
+/// models; honors `MEMENTO_NO_DAEMON=1` on `status`.
+fn daemon_cmd(i18n: &I18n) -> Command {
+    Command::new("daemon")
+        .about(i18n.t(StringKey::CliHelpDaemon))
+        .subcommand(Command::new("start").about(i18n.t(StringKey::CliHelpDaemonStart)))
+        .subcommand(Command::new("stop").about(i18n.t(StringKey::CliHelpDaemonStop)))
+        .subcommand(Command::new("status").about(i18n.t(StringKey::CliHelpDaemonStatus)))
 }
 
 // ---- env / flag resolution -------------------------------------------------
