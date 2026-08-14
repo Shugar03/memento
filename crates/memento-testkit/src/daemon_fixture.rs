@@ -156,6 +156,15 @@ impl DaemonFixture {
             shutdown_rx,
         ));
 
+        // Yield once so the spawned accept_loop task is scheduled and the
+        // pipe is in the "listening" state before `start` returns. Without
+        // this the first `DaemonClient::connect` from the test thread can
+        // race the listener's first accept() and observe a spurious EOF
+        // (the accept task hasn't picked up the listener yet).
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
         Self {
             state,
             pid: std::process::id(),

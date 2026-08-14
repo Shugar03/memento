@@ -184,6 +184,10 @@ impl ClientConfig {
 pub struct DaemonClient {
     pub conn: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes>,
     pub welcome: Welcome,
+    /// The client's per-connection bound on read/write timeouts
+    /// (`MEMENTO_DAEMON_PIPE_TIMEOUT`, REQ-DAEMON-006). Preserved here so
+    /// downstream `dispatch` calls can reuse it without re-reading env.
+    pipe_timeout: Duration,
 }
 
 impl DaemonClient {
@@ -212,7 +216,11 @@ impl DaemonClient {
         // we use the same framing helpers as the daemon.
         Self::write_hello(&mut conn, config).await?;
         let welcome = Self::read_welcome(&mut conn, config).await?;
-        Ok(Self { conn, welcome })
+        Ok(Self {
+            conn,
+            welcome,
+            pipe_timeout: config.pipe_timeout,
+        })
     }
 
     /// Write the framed HELLO payload (B6: the production client side
@@ -265,6 +273,63 @@ impl DaemonClient {
             )));
         }
         Ok(welcome)
+    }
+
+    /// Dispatch one framed [`memento_mcp::dispatcher::Command`] and read
+    /// the response JSON. The dispatch is the canonical CLI-side wire
+    /// roundtrip (REQ-DAEMON-006 envelope: 2 KiB-frame chunked
+    /// `frame::write_message` + reassembled `frame::read_message`).
+    ///
+    /// B7 exposes this so CLI commands (memory.* search, stats, health)
+    /// can route their work through the daemon when one is alive. The
+    /// caller is responsible for serializing any per-tool `args` into
+    /// `extra` on the wire envelope (mcp.* arms carry an `args: Value`
+    /// field once the per-tool plumbing lands in B7; today the wire
+    /// envelope is the routing marker that dispatcher.rs returns from
+    /// `mcp.*`).
+    pub async fn dispatch(
+        &mut self,
+        cmd: memento_mcp::dispatcher::Command,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let bytes = serde_json::to_vec(&cmd)
+            .map_err(|err| DaemonError::Protocol(format!("command serialize: {err}")))?;
+        timeout(self.pipe_timeout, frame::write_message(&mut self.conn, &bytes))
+            .await
+            .map_err(|_| DaemonError::Timeout(self.pipe_timeout))?
+            .map_err(DaemonError::Io)?;
+        let payload = timeout(self.pipe_timeout, frame::read_message(&mut self.conn))
+            .await
+            .map_err(|_| DaemonError::Timeout(self.pipe_timeout))?
+            .map_err(DaemonError::Io)?;
+        serde_json::from_slice(&payload)
+            .map_err(|err| DaemonError::Protocol(format!("response parse: {err}")))
+    }
+
+    /// The per-connection `pipe_timeout` preserved from the original
+    /// config.
+    pub fn pipe_timeout(&self) -> Duration {
+        self.pipe_timeout
+    }
+}
+
+/// B7 helper: build a `DaemonClient` from an already-connected pipe + welcome
+/// envelope, preserving the client's `pipe_timeout` for subsequent dispatches.
+/// Tests construct this after `PipeStream::connect_by_path` + the
+/// production-side handshake; production callers go through
+/// [`DaemonClient::connect`].
+impl DaemonClient {
+    /// Build a client over an already-handshaken connection. Preserves the
+    /// `pipe_timeout` for downstream `dispatch` calls.
+    pub fn from_handshake(
+        conn: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes>,
+        welcome: Welcome,
+        pipe_timeout: Duration,
+    ) -> Self {
+        Self {
+            conn,
+            welcome,
+            pipe_timeout,
+        }
     }
 }
 
