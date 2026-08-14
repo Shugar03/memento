@@ -11,10 +11,26 @@ description = "Memento RS shared test infrastructure: fakes, temp stores, inject
 # production builds of dependent crates).
 memento-domain = { path = "../memento-domain", features = ["testkit"] }
 memento-ports = { path = "../memento-ports" }
+# daemon fixture (daemon-persistent B7): in-process daemon harness bound to a
+# real Windows named pipe, reusable across the suite.
+memento-mcp = { path = "../memento-mcp" }
+memento-application = { path = "../memento-application" }
+memento-tenant = { path = "../memento-tenant" }
+memento-parse = { path = "../memento-parse" }
+# pipe client fixture (daemon-persistent B7): wraps DaemonClient over a
+# `DaemonFixture`-owned daemon for one-liner test wiring.
+memento-cli = { path = "../memento-cli" }
 async-trait.workspace = true
 chrono.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+tracing.workspace = true
+interprocess.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [dev-dependencies]
 tokio.workspace = true
