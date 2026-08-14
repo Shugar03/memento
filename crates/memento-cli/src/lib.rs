@@ -40,6 +40,8 @@ pub mod spawn;
 pub mod startup;
 pub mod transport;
 
+use std::path::Path;
+
 use clap::ArgMatches;
 use memento_domain::DomainError;
 use memento_i18n::I18n;
@@ -72,7 +74,8 @@ pub async fn run(matches: &ArgMatches, i18n: &I18n) -> Result<(), DomainError> {
         // (REQ-OBS-007, design D7 — tenant-create bootstrap precedent).
         Some(("observability", sub)) => commands::observability::run(sub),
         // Daemon control plane (REQ-DAEMON-007): no app open, never loads
-        // models. `start`/`stop` are stubs in B4; `status` pings the pipe.
+        // models. B5: `start`/`stop` are real calls into
+        // `DaemonSpawner::start/stop`; `status` pings the pipe.
         Some(("daemon", sub)) => commands::daemon::run(sub, json).await,
         Some((
             name @ ("ingest" | "search" | "get-chunk" | "feedback" | "delete" | "context-fit"
@@ -97,4 +100,15 @@ pub async fn run(matches: &ArgMatches, i18n: &I18n) -> Result<(), DomainError> {
             message: "unknown command; run 'memento --help' for usage".into(),
         }),
     }
+}
+
+/// B5 daemon-aware startup entry point used by tests + the integration
+/// harness. Mirrors the `daemon`-subcommand path: probe → spawn on miss
+/// → retry connect → tag the result as `Local` or `Remote`. See
+/// [`startup::try_open`] for the full semantics.
+pub async fn open_daemon_aware(
+    root: &Path,
+    no_embeddings: bool,
+) -> Result<startup::CliBackend, DomainError> {
+    startup::try_open(root, no_embeddings).await
 }

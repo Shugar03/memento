@@ -1,30 +1,35 @@
 //! Daemon control plane (REQ-DAEMON-007, design D4): the `memento daemon
 //! start|stop|status` subcommands.
 //!
-//! B4 scope:
+//! B5 scope (lifecycle wired):
 //!
-//! * `status` reads the cookie, attempts a HELLO-style ping through
-//!   [`DaemonClient`] (built in B3) and reports the daemon's PID, uptime,
-//!   tenant id, capabilities, and effective spawn config. Falls back to a
-//!   structured "daemon_unavailable" payload when no daemon is bound (so
-//!   operators can probe without crashing). Honors `MEMENTO_NO_DAEMON=1`:
-//!   in that mode `status` reports "daemon_disabled" and exits 0 — no pipe
-//!   contact, no model load (REQ-DAEMON-004).
-//!
-//! * `start` / `stop` are stubs in B4 — the lazy-spawn and cooperative
-//!   shutdown logic land in B5 (REQ-DAEMON-003/013). They print a
-//!   structured pending marker and exit 0 so the surface is wired and the
-//!   help tree is honest about what the command does today.
+//! * `start` — calls [`DaemonSpawner::start`]. The spawner is idempotent:
+//!   if a daemon is already running for this (root, tenant) (cookie file
+//!   present), it returns the existing handle WITHOUT spawning a second
+//!   process (REQ-DAEMON-003 GIVEN "the daemon is spawned, becomes ready,
+//!   and the command succeeds"). The structured JSON envelope reports
+//!   `started_at` (cookie mtime) so `start` is a no-op for the operator
+//!   when the daemon is already up.
+//! * `stop` — calls [`DaemonSpawner::stop`]. Roundtrips `sys.shutdown`
+//!   through the named pipe and falls back to `taskkill /F` after a
+//!   bounded grace window (REQ-DAEMON-013 / R7).
+//! * `status` — B4 behavior preserved: connect via [`DaemonClient`],
+//!   report pid/uptime/tenant/config. Falls back to a structured
+//!   `daemon_unavailable` payload when no daemon is bound so operators
+//!   can probe without an exit-code alarm. Honors `MEMENTO_NO_DAEMON=1`
+//!   with a `daemon_disabled` payload (no pipe contact, no model load —
+//!   REQ-DAEMON-004).
 //!
 //! The control plane never opens `AppService` and never loads models —
 //! that contract is the whole point of a daemon (REQ-DAEMON-007).
 
 use clap::ArgMatches;
-use memento_domain::DomainError;
+use memento_domain::{DomainError, TenantId};
 use serde_json::json;
 use tracing::{info, warn};
 
 use crate::output::emit_json_value;
+use crate::spawn::{DaemonSpawner, SpawnError, SpawnerOptions};
 use crate::transport::pipe_client::{ClientConfig, NO_DAEMON_ENV};
 use crate::transport::{DaemonClient, DaemonError};
 
@@ -36,8 +41,8 @@ use crate::transport::{DaemonClient, DaemonError};
 pub async fn run(matches: &ArgMatches, _json: bool) -> Result<(), DomainError> {
     match matches.subcommand() {
         Some(("status", sub)) => run_status(sub).await,
-        Some(("start", sub)) => run_start(sub),
-        Some(("stop", sub)) => run_stop(sub),
+        Some(("start", sub)) => run_start(sub).await,
+        Some(("stop", sub)) => run_stop(sub).await,
         _ => Err(DomainError::InvalidInput {
             message: "unknown daemon subcommand; run 'memento daemon --help' for usage".into(),
         }),
@@ -110,32 +115,121 @@ async fn run_status(_matches: &ArgMatches) -> Result<(), DomainError> {
     }
 }
 
-/// `memento daemon start` — stub in B4 (lazy-spawn lives in B5,
-/// REQ-DAEMON-003). Reports a structured "pending" marker and exits 0 so
-/// the surface is discoverable from `--help` and operators can wire
-/// automation against the eventual semantics today.
-fn run_start(_matches: &ArgMatches) -> Result<(), DomainError> {
-    let payload = json!({
-        "status": "pending",
-        "command": "daemon.start",
-        "phase": "b4_skeleton",
-        "note": "lazy-spawn implementation lands in B5 (REQ-DAEMON-003)",
-    });
-    emit_json_value(&payload);
-    Ok(())
+/// `memento daemon start` — call [`DaemonSpawner::start`]. The spawner
+/// is idempotent: a daemon already running for this (root, tenant) is
+/// reported as the existing handle without spawning a second process
+/// (REQ-DAEMON-003 GIVEN). Spawn errors are surfaced as a structured
+/// JSON envelope so operators can grep the `tier` field in CI logs
+/// (REQ-DAEMON-002 uniform taxonomy).
+async fn run_start(_matches: &ArgMatches) -> Result<(), DomainError> {
+    // Resolve spawn inputs from env. The same gate as `ClientConfig::from_env`
+    // — if the env gate rejects the request we echo it as a structured
+    // payload (the operator expects a structured surface, not a panic).
+    let config = match ClientConfig::from_env() {
+        Ok(c) => c,
+        Err(err) => {
+            return Err(startup_error_to_domain(&err));
+        }
+    };
+    let tenant_id: TenantId = config
+        .tenant_id
+        .parse()
+        .map_err(|err| DomainError::InvalidInput {
+            message: format!("invalid MEMENTO_TENANT: {err}"),
+        })?;
+    let opts = SpawnerOptions {
+        root: config.root.clone(),
+        tenant_id,
+        no_embeddings: config.no_embeddings,
+        locale: config.locale.clone(),
+    };
+
+    match DaemonSpawner::start(&opts).await {
+        Ok(handle) => {
+            info!(
+                pid = handle.pid,
+                started_at = %handle.started_at.to_rfc3339(),
+                "daemon start: ok (idempotent if already running)"
+            );
+            let payload = json!({
+                "status": "ok",
+                "pid": handle.pid,
+                "started_at": handle.started_at.to_rfc3339(),
+                "idempotent": true,
+            });
+            emit_json_value(&payload);
+            Ok(())
+        }
+        Err(err) => {
+            warn!(tier = err.tier(), ?err, "daemon start: failed");
+            Err(spawn_error_to_domain(err))
+        }
+    }
 }
 
-/// `memento daemon stop` — stub in B4 (cooperative shutdown lives in B5,
-/// REQ-DAEMON-013). Same surface guarantees as [`run_start`].
-fn run_stop(_matches: &ArgMatches) -> Result<(), DomainError> {
-    let payload = json!({
-        "status": "pending",
-        "command": "daemon.stop",
-        "phase": "b4_skeleton",
-        "note": "cooperative shutdown implementation lands in B5 (REQ-DAEMON-013)",
-    });
-    emit_json_value(&payload);
-    Ok(())
+/// `memento daemon stop` — call [`DaemonSpawner::stop`]: HELLO/WELCOME +
+/// one framed `sys.shutdown` request, fall back to `taskkill /F` on
+/// grace expiry (REQ-DAEMON-013 / R7). Errors surface as the same
+/// structured envelope the spawner produces.
+async fn run_stop(_matches: &ArgMatches) -> Result<(), DomainError> {
+    let config = match ClientConfig::from_env() {
+        Ok(c) => c,
+        Err(err) => return Err(startup_error_to_domain(&err)),
+    };
+    // The stop path needs the root; we don't need the spawn options.
+    let root = config.root.clone();
+    match DaemonSpawner::stop(&root).await {
+        Ok(()) => {
+            info!(pid_field = "shutdown_sent", "daemon stop: ok");
+            let payload = json!({
+                "status": "ok",
+                "phase": "shutdown_requested",
+            });
+            emit_json_value(&payload);
+            Ok(())
+        }
+        Err(err) => {
+            warn!(tier = err.tier(), ?err, "daemon stop: failed");
+            Err(spawn_error_to_domain(err))
+        }
+    }
+}
+
+/// Map a [`SpawnError`] onto a [`DomainError`] so the CLI exit code
+/// path (REQ-CL-005) handles it uniformly with every other CLI failure.
+fn spawn_error_to_domain(err: SpawnError) -> DomainError {
+    let message = format!("{err}");
+    match err {
+        SpawnError::Disabled
+        | SpawnError::BinaryNotFound
+        | SpawnError::MissingEnv(_)
+        | SpawnError::LockBusy(_) => DomainError::InvalidInput { message },
+        SpawnError::ReadinessTimeout(_)
+        | SpawnError::SpawnFailedExit(_)
+        | SpawnError::Shutdown(_)
+        | SpawnError::Connect(_)
+        | SpawnError::Io(_) => DomainError::Internal { message },
+    }
+}
+
+/// Map a [`DaemonError`] onto a [`DomainError`] (used by `start`/`stop`
+/// when the env gate rejects them — same uniform surface as `status`).
+fn startup_error_to_domain(err: &DaemonError) -> DomainError {
+    match err {
+        DaemonError::Disabled | DaemonError::MissingEnv(_) => DomainError::InvalidInput {
+            message: format!("{err}"),
+        },
+        DaemonError::ConfigMismatch(_) | DaemonError::AuthFailed(_) => {
+            DomainError::AuthFailed
+        }
+        DaemonError::PipeNotFound(_)
+        | DaemonError::Timeout(_)
+        | DaemonError::Protocol(_)
+        | DaemonError::CookieMissing(_)
+        | DaemonError::Io(_) => DomainError::Internal {
+            message: format!("{err}"),
+        },
+    }
 }
 
 /// Map a [`DaemonError`] onto the JSON `reason` string the operator sees.
@@ -199,14 +293,41 @@ mod tests {
 
     #[test]
     fn start_returns_pending_marker() {
+        // B5: `start` is now a real call into `DaemonSpawner::start`.
+        // Without env credentials it surfaces a structured
+        // `DaemonError::MissingEnv` translated to `DomainError::InvalidInput`.
+        // The test asserts the structured path: the surface exits with a
+        // domain error (NOT exit 0) and never reaches the spawner.
         let m = matches_for(&["daemon", "start"]);
-        block_on(run(&m, false)).expect("start stub is Ok in B4");
+        // SAFETY: serialized in nextest via `test(daemon_commands)`. The
+        // B5 unit test asserts that without credentials the call surfaces
+        // a structured domain error rather than the old `pending` marker.
+        unsafe { std::env::remove_var("MEMENTO_TOKEN") };
+        unsafe { std::env::remove_var("MEMENTO_AGENT_ID") };
+        unsafe { std::env::remove_var("MEMENTO_TENANT") };
+        unsafe { std::env::remove_var("MEMENTO_ROOT") };
+        let err = block_on(run(&m, false)).expect_err("missing env surfaces error");
+        assert!(
+            matches!(err, DomainError::InvalidInput { .. }),
+            "InvalidInput tier: {err}"
+        );
     }
 
     #[test]
     fn stop_returns_pending_marker() {
+        // B5: `stop` is now a real call into `DaemonSpawner::stop`. Same
+        // env-gate semantics as `start` (no credentials → structured
+        // domain error, NOT the old `pending` marker).
         let m = matches_for(&["daemon", "stop"]);
-        block_on(run(&m, false)).expect("stop stub is Ok in B4");
+        unsafe { std::env::remove_var("MEMENTO_TOKEN") };
+        unsafe { std::env::remove_var("MEMENTO_AGENT_ID") };
+        unsafe { std::env::remove_var("MEMENTO_TENANT") };
+        unsafe { std::env::remove_var("MEMENTO_ROOT") };
+        let err = block_on(run(&m, false)).expect_err("missing env surfaces error");
+        assert!(
+            matches!(err, DomainError::InvalidInput { .. }),
+            "InvalidInput tier: {err}"
+        );
     }
 
     #[test]
