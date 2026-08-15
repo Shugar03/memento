@@ -36,8 +36,11 @@
 pub mod args;
 pub mod commands;
 pub mod output;
+pub mod spawn;
 pub mod startup;
 pub mod transport;
+
+use std::path::Path;
 
 use clap::ArgMatches;
 use memento_domain::DomainError;
@@ -64,11 +67,19 @@ pub fn resolve_root(matches: &ArgMatches) -> Result<std::path::PathBuf, DomainEr
 pub async fn run(matches: &ArgMatches, i18n: &I18n) -> Result<(), DomainError> {
     let root = resolve_root(matches)?;
     let no_embeddings = matches.get_flag("no-embeddings");
+    let json = matches.get_flag("json");
     match matches.subcommand() {
         Some(("tenant", sub)) => commands::tenant::run(sub, &root, no_embeddings, i18n).await,
         // Process-local observability dump: no app open, no credentials
         // (REQ-OBS-007, design D7 — tenant-create bootstrap precedent).
-        Some(("observability", sub)) => commands::observability::run(sub),
+        // B6 (REQ-DAEMON-010, R5): the dispatcher is async because the
+        // daemon path sends `sys.metrics` over the named pipe; on any
+        // failure it falls back to the local dump.
+        Some(("observability", sub)) => commands::observability::run(sub).await,
+        // Daemon control plane (REQ-DAEMON-007): no app open, never loads
+        // models. B5: `start`/`stop` are real calls into
+        // `DaemonSpawner::start/stop`; `status` pings the pipe.
+        Some(("daemon", sub)) => commands::daemon::run(sub, json).await,
         Some((
             name @ ("ingest" | "search" | "get-chunk" | "feedback" | "delete" | "context-fit"
             | "code" | "stats" | "health"),
@@ -92,4 +103,15 @@ pub async fn run(matches: &ArgMatches, i18n: &I18n) -> Result<(), DomainError> {
             message: "unknown command; run 'memento --help' for usage".into(),
         }),
     }
+}
+
+/// B5 daemon-aware startup entry point used by tests + the integration
+/// harness. Mirrors the `daemon`-subcommand path: probe → spawn on miss
+/// → retry connect → tag the result as `Local` or `Remote`. See
+/// [`startup::try_open`] for the full semantics.
+pub async fn open_daemon_aware(
+    root: &Path,
+    no_embeddings: bool,
+) -> Result<startup::CliBackend, DomainError> {
+    startup::try_open(root, no_embeddings).await
 }

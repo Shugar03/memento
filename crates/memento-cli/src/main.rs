@@ -13,6 +13,11 @@ async fn main() {
     // stderr on JSON error paths). Must run before clap consumes argv.
     memento_observability::tracing::init_cli_subscriber();
 
+    // `--no-daemon` (REQ-DAEMON-004, design D7): pre-scan argv and
+    // mirror as `MEMENTO_NO_DAEMON=1` BEFORE any code reads env. Runs
+    // synchronously in the current thread, before the runtime polls.
+    let _ = memento_cli::args::no_daemon_from_argv();
+
     // Locale must be known BEFORE clap parses: the help tree is built from
     // the i18n tables, so `--locale` is pre-scanned from argv (args.rs).
     let locale = memento_cli::args::locale_from_argv();

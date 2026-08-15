@@ -56,6 +56,8 @@ Optional. In its absence the defaults are:
 | `MEMENTO_METRICS_FILE` | `memento` | stdout | Destination override for the `observability metrics` dump (REQ-OBS-007). |
 | `MEMENTO_EVENTS` | all | `0` | `1` = append operational events to `logs/<tid>.events.jsonl`; ids and counts only, never content, queries, or credentials (REQ-OBS-008/009). |
 | `MEMENTO_OBSERVE_SAMPLES` | `memento-worker` | `0` | `1` = sample RSS bytes + thread count every 30s into the bound tenant's events file (REQ-OBS-011). |
+| `MEMENTO_NO_DAEMON` | `memento` (CLI) | `0` | `1` = disable the persistent daemon; force the pre-change one-shot in-process path on every command. Mirrors the `--no-daemon` global flag (REQ-DAEMON-004). |
+| `MEMENTO_DAEMON_PIPE_TIMEOUT` | `memento`, `memento-mcp` | `5` | Seconds the daemon bounds a single framed write / handshake before failing the request without stalling (REQ-DAEMON-006 G2). |
 
 `memento-worker` does **not** require `MEMENTO_TOKEN` or
 `MEMENTO_AGENT_ID` (operational identity, not tenant-bound).
@@ -67,6 +69,7 @@ Optional. In its absence the defaults are:
 | `--root <path>` | all | Override `MEMENTO_ROOT` (REQ-CL-005). |
 | `--locale <es\|en>` | `memento` (CLI/MCP) | Override `MEMENTO_LOCALE`. |
 | `--json` | `memento` | Structured output `{code, message, exit_code}`. |
+| `--no-daemon` | `memento` (CLI) | Same as `MEMENTO_NO_DAEMON=1`, per invocation. Sets the env var before any startup logic runs, so every transport / spawner / startup check short-circuits without touching the named pipe (REQ-DAEMON-004). |
 
 `--json` is **global**: covers help and errors.
 

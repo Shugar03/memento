@@ -6,8 +6,11 @@
 //! * [`memory`] — T-083: search/get_chunk/feedback/delete/context_fit.
 //! * [`stats`] — T-083: stats (REQ-CL-006) + health (REQ-OP-001 Q3).
 //! * [`code`] — T-084: code index/status/debug.
+//! * [`daemon`] — B4 (REQ-DAEMON-007): control plane
+//!   (`memento daemon start|stop|status`). Never opens the AppService.
 
 pub mod code;
+pub mod daemon;
 pub mod ingest;
 pub mod memory;
 pub mod observability;

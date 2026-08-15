@@ -26,6 +26,7 @@
 //! * [`tools_code`] — the 8 read-only `code.*` tools (T-073).
 
 pub mod daemon;
+pub mod dispatcher;
 pub mod errors;
 pub mod frame;
 pub mod handshake;

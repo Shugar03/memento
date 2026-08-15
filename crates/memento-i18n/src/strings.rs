@@ -95,6 +95,7 @@ pub enum StringKey {
     CliHelpCodeDebug,
     CliHelpJson,
     CliHelpNoEmbeddings,
+    CliHelpNoDaemon,
     CliHelpRootArg,
     CliHelpLocaleArg,
     CliHelpQueryArg,
@@ -124,11 +125,16 @@ pub enum StringKey {
     // Observability commands (REQ-OBS-007, design D7).
     CliHelpObservability,
     CliHelpObservabilityMetrics,
+    // Daemon control plane (REQ-DAEMON-007, design D4).
+    CliHelpDaemon,
+    CliHelpDaemonStart,
+    CliHelpDaemonStop,
+    CliHelpDaemonStatus,
 }
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 91] = [
+    pub const ALL: [StringKey; 96] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -192,6 +198,7 @@ impl StringKey {
         StringKey::CliHelpCodeDebug,
         StringKey::CliHelpJson,
         StringKey::CliHelpNoEmbeddings,
+        StringKey::CliHelpNoDaemon,
         StringKey::CliHelpRootArg,
         StringKey::CliHelpLocaleArg,
         StringKey::CliHelpQueryArg,
@@ -220,6 +227,10 @@ impl StringKey {
         StringKey::CliPromptConfirmDelete,
         StringKey::CliHelpObservability,
         StringKey::CliHelpObservabilityMetrics,
+        StringKey::CliHelpDaemon,
+        StringKey::CliHelpDaemonStart,
+        StringKey::CliHelpDaemonStop,
+        StringKey::CliHelpDaemonStatus,
     ];
 }
 
@@ -333,6 +344,7 @@ pub fn es(key: StringKey) -> &'static str {
         }
         StringKey::CliHelpJson => "Salida en JSON (REQ-CL-003).",
         StringKey::CliHelpNoEmbeddings => "Sin embeddings (REQ-MC-004).",
+        StringKey::CliHelpNoDaemon => "Desactiva el daemon persistente y usa el camino one-shot local (REQ-DAEMON-004).",
         StringKey::CliHelpRootArg => "Raíz de almacenamiento (por defecto ~/.memento).",
         StringKey::CliHelpLocaleArg => "Idioma de la interfaz: es | en.",
         StringKey::CliHelpQueryArg => "Consulta de búsqueda.",
@@ -373,6 +385,17 @@ pub fn es(key: StringKey) -> &'static str {
         }
         StringKey::CliHelpObservabilityMetrics => {
             "Vuelca el registro de métricas como texto Prometheus (stdout o MEMENTO_METRICS_FILE)."
+        }
+        // Daemon control plane (REQ-DAEMON-007, design D4).
+        StringKey::CliHelpDaemon => {
+            "Controla el daemon persistente (un proceso por (root, tenant))."
+        }
+        StringKey::CliHelpDaemonStart => "Asegura que hay un daemon corriendo y reporta su PID.",
+        StringKey::CliHelpDaemonStop => {
+            "Detiene el daemon de forma cooperativa (sin recargar modelos)."
+        }
+        StringKey::CliHelpDaemonStatus => {
+            "Muestra el PID, el uptime y la configuración efectiva del daemon."
         }
     }
 }
@@ -471,6 +494,7 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpCodeDebug => "Index graph diagnostics (nodes, edges, integrity).",
         StringKey::CliHelpJson => "JSON output (REQ-CL-003).",
         StringKey::CliHelpNoEmbeddings => "No embeddings (REQ-MC-004).",
+        StringKey::CliHelpNoDaemon => "Disable the persistent daemon; run the one-shot in-process path (REQ-DAEMON-004).",
         StringKey::CliHelpRootArg => "Storage root (default ~/.memento).",
         StringKey::CliHelpLocaleArg => "Interface locale: es | en.",
         StringKey::CliHelpQueryArg => "Search query.",
@@ -509,6 +533,15 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpObservability => "Observability: process-local metrics (no HTTP).",
         StringKey::CliHelpObservabilityMetrics => {
             "Dump the metrics registry as Prometheus text (stdout or MEMENTO_METRICS_FILE)."
+        }
+        // Daemon control plane (REQ-DAEMON-007, design D4).
+        StringKey::CliHelpDaemon => {
+            "Control the persistent daemon (one process per (root, tenant))."
+        }
+        StringKey::CliHelpDaemonStart => "Ensure a daemon is running and report its PID.",
+        StringKey::CliHelpDaemonStop => "Stop the daemon cooperatively (no model reload).",
+        StringKey::CliHelpDaemonStatus => {
+            "Show the daemon's PID, uptime, and effective configuration."
         }
     }
 }

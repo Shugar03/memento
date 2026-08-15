@@ -118,7 +118,7 @@ fn metrics_dump_file_destination_renders_recorded_traffic() {
         .try_get_matches_from(["memento", "observability", "metrics"])
         .expect("observability metrics parses");
     let (_name, sub) = root.subcommand().expect("observability subcommand");
-    memento_cli::commands::observability::run(sub).expect("dump runs");
+    memento_cli::commands::observability::run_sync(sub).expect("dump runs");
 
     let content = std::fs::read_to_string(&dest).expect("read destination");
     assert!(
@@ -128,7 +128,7 @@ fn metrics_dump_file_destination_renders_recorded_traffic() {
 
     // Triangulation: more traffic → the next dump reflects the new value.
     metrics::counter!("memento_cli_dump_probe_total").increment(2);
-    memento_cli::commands::observability::run(sub).expect("dump runs again");
+    memento_cli::commands::observability::run_sync(sub).expect("dump runs again");
     let content = std::fs::read_to_string(&dest).expect("read destination");
     assert!(
         content.contains("memento_cli_dump_probe_total 5"),
