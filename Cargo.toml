@@ -18,6 +18,13 @@ members = [
     "crates/memento-ir-gate",
 ]
 
+# Vendored tokenizers 0.22.2 (fastembed 5.17.4 pins ^0.22) with a compacted
+# unigram trie (Vec children instead of per-node AHashMap, huggingface PR
+# #2039). Disposable: remove this patch and delete vendor/ to revert.
+# See docs/dependencies.md and engram perf/tokenizer-patch-vendored.
+[patch.crates-io]
+tokenizers = { path = "vendor/tokenizers" }
+
 # Root package: workspace-level integration harness (T-102 MCP↔CLI
 # equivalence in tests/) and criterion benches (T-103 in benches/). It is
 # test infrastructure only — no product code, never published.
