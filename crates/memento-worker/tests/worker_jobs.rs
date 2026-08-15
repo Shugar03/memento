@@ -278,3 +278,87 @@ fn now_one_shot_fails_loudly_when_a_job_fails() {
         .code(1)
         .stdout(predicates::str::contains("backup: FAILED"));
 }
+
+#[tokio::test]
+async fn worker_and_daemon_coexist_on_one_store_both_respond() {
+    // REQ-DAEMON-009 worker coexistence (design D9 / S7.4 test): the
+    // daemon and the worker share ONE tenant store; the test proves both
+    // RESPOND without corrupting data.
+    //
+    // Engine semantics (empirical, lance 9.0): LanceDB does NOT hold a
+    // connection-level exclusive lock — concurrent opens are permitted and
+    // commits use optimistic concurrency. The STORE_LOCKED tier (mapped in
+    // `memento_lancedb::map_error`) covers genuine lock conflicts; the
+    // operational invariant stays: quiesce/stop the daemon before the
+    // worker rotation (docs/ops).
+    let ts = TempStore::new();
+    let (tid, token) = memento_tenant::CredentialStore::new(ts.root())
+        .create_tenant("daemon-tenant")
+        .expect("provision tenant");
+    let ctx = memento_domain::TenantContext::new(
+        tid,
+        memento_tenant::TenantResolverImpl::open(ts.root()).workspace_id(&tid),
+        memento_domain::AgentId::new("daemon-agent"),
+    );
+
+    // The "daemon": a live AppService holding the store (same root).
+    let clock = TestClock::default();
+    let parse: Arc<dyn ParsePort> = Arc::new(NoParse);
+    let daemon_app = Arc::new(
+        AppService::open(
+            &ctx,
+            ts.root(),
+            parse,
+            None,
+            Arc::new(AppClock(clock)),
+        )
+        .await
+        .expect("daemon app opens"),
+    );
+    daemon_app
+        .ingest_text(
+            &ctx,
+            IngestTextRequest {
+                text: "memoria del daemon; el worker corre en paralelo sin corromperla".into(),
+                doc_id: None,
+                metadata: None,
+            },
+        )
+        .await
+        .expect("daemon ingest");
+    assert_eq!(
+        daemon_app.store().count_chunks(&ctx).await.unwrap(),
+        1,
+        "daemon holds a live store"
+    );
+
+    // The "worker": the real `memento-worker --now` binary against the
+    // SAME root while the daemon holds the store → both respond.
+    let out = assert_cmd::Command::cargo_bin("memento-worker")
+        .expect("binary built")
+        .env("MEMENTO_TOKEN", token.to_string())
+        .env("MEMENTO_AGENT_ID", "daemon-agent")
+        .arg("--root")
+        .arg(ts.root())
+        .arg("--now")
+        .output()
+        .expect("worker runs");
+    assert!(
+        out.status.success(),
+        "worker responds (exit {:?}); stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("sweep: ok") && stdout.contains("backup: ok"),
+        "worker jobs ran against the shared store: {stdout}"
+    );
+
+    // Never corrupt data: the daemon's chunk survives the worker run.
+    assert_eq!(
+        daemon_app.store().count_chunks(&ctx).await.unwrap(),
+        1,
+        "daemon store intact after the coexisting worker run"
+    );
+}

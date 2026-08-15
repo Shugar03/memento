@@ -597,14 +597,16 @@ fn tenant_backup_export_and_live_restore_rejection() {
     assert!(v["chunk_count"].as_u64().unwrap() >= 1);
 
     // restore against the LIVE store → structured rejection (REQ-ML-005).
+    // REQ-DAEMON-009: the daemon still holds the store (quiesce did not
+    // complete) → STORE_BUSY tier, store + backup untouched.
     let out = authed(dir.path(), &token)
         .args(["--json", "tenant", "restore"])
         .arg(&backup_path)
         .output()
         .expect("run restore");
-    assert_eq!(out.status.code(), Some(2), "live restore rejected");
+    assert_eq!(out.status.code(), Some(22), "live restore → STORE_BUSY");
     let v: Value = serde_json::from_slice(&out.stderr).expect("structured error");
-    assert_eq!(v["code"], "INVALID_INPUT", "quiesce requirement named");
+    assert_eq!(v["code"], "STORE_BUSY", "quiesce-timeout tier");
 }
 
 // ---- REQ-OBS-001: CLI tracing subscriber gate -------------------------------

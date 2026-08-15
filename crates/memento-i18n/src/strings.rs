@@ -71,6 +71,10 @@ pub enum StringKey {
     ErrSubprocessArgvInvalid,
     // REQ-DAEMON-013: bounded auto-restart exhausted.
     ErrDaemonUnavailable,
+    // REQ-DAEMON-009: restore against a store the daemon still holds.
+    ErrStoreBusy,
+    // REQ-DAEMON-009: store locked by another holder (worker coexistence).
+    ErrStoreLocked,
     // CLI help (REQ-CL-004).
     CliHelpTenantCreate,
     CliHelpIngest,
@@ -136,7 +140,7 @@ pub enum StringKey {
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 97] = [
+    pub const ALL: [StringKey; 99] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -176,6 +180,8 @@ impl StringKey {
         StringKey::ErrSubprocessStdoutOverflow,
         StringKey::ErrSubprocessArgvInvalid,
         StringKey::ErrDaemonUnavailable,
+        StringKey::ErrStoreBusy,
+        StringKey::ErrStoreLocked,
         StringKey::CliHelpTenantCreate,
         StringKey::CliHelpIngest,
         StringKey::CliHelpSearch,
@@ -307,6 +313,12 @@ pub fn es(key: StringKey) -> &'static str {
         }
         StringKey::ErrDaemonUnavailable => {
             "El daemon persistente no está disponible (agotó los reintentos acotados)."
+        }
+        StringKey::ErrStoreBusy => {
+            "El almacén está ocupado: el daemon aún mantiene el almacén (haga quiesce o deténgalo antes de restaurar)."
+        }
+        StringKey::ErrStoreLocked => {
+            "El almacén está bloqueado por otro proceso (daemon o worker); no se tocaron los datos."
         }
         // CLI help.
         StringKey::CliHelpTenantCreate => {
@@ -468,6 +480,12 @@ pub fn en(key: StringKey) -> &'static str {
         }
         StringKey::ErrDaemonUnavailable => {
             "Persistent daemon unavailable (bounded restart attempts exhausted)."
+        }
+        StringKey::ErrStoreBusy => {
+            "Store busy: the daemon still holds the store (quiesce or stop it before restoring)."
+        }
+        StringKey::ErrStoreLocked => {
+            "Store locked by another holder (daemon or worker); no data was touched."
         }
         // CLI help.
         StringKey::CliHelpTenantCreate => "Create a tenant and print the access token once.",

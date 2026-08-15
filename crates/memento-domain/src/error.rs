@@ -80,6 +80,12 @@ pub const CODE_SUBPROCESS_ARGV_INVALID: &str = "SUBPROCESS_ARGV_INVALID";
 /// crashed repeatedly (REQ-DAEMON-013 crash loop → bounded attempts →
 /// this tier).
 pub const CODE_DAEMON_UNAVAILABLE: &str = "DAEMON_UNAVAILABLE";
+/// Stable machine-readable code: the store is busy (REQ-DAEMON-009 —
+/// a restore against a store the daemon still holds / quiesce timed out).
+pub const CODE_STORE_BUSY: &str = "STORE_BUSY";
+/// Stable machine-readable code: the store is locked by another holder
+/// (REQ-DAEMON-009 — worker vs daemon coexistence; never corrupt data).
+pub const CODE_STORE_LOCKED: &str = "STORE_LOCKED";
 
 /// Memento domain error. Every variant carries a stable code and a
 /// deterministic CLI exit code (see module docs).
@@ -161,6 +167,16 @@ pub enum DomainError {
     /// (REQ-DAEMON-013: bounded auto-restart exhausted → this tier).
     #[error("daemon unavailable: {message}")]
     DaemonUnavailable { message: String },
+    /// The store is busy: a restore ran against a store the daemon still
+    /// holds (REQ-DAEMON-009 — quiesce did not complete / timed out).
+    /// The store and the backup stay untouched.
+    #[error("store busy: {message}")]
+    StoreBusy { message: String },
+    /// The store is locked by another holder (REQ-DAEMON-009 worker
+    /// coexistence): opening it would risk corruption, so the operation
+    /// fails instead.
+    #[error("store locked: {message}")]
+    StoreLocked { message: String },
 }
 
 impl DomainError {
@@ -191,6 +207,8 @@ impl DomainError {
             DomainError::SubprocessStdoutOverflow { .. } => CODE_SUBPROCESS_STDOUT_OVERFLOW,
             DomainError::SubprocessArgvInvalid { .. } => CODE_SUBPROCESS_ARGV_INVALID,
             DomainError::DaemonUnavailable { .. } => CODE_DAEMON_UNAVAILABLE,
+            DomainError::StoreBusy { .. } => CODE_STORE_BUSY,
+            DomainError::StoreLocked { .. } => CODE_STORE_LOCKED,
         }
     }
 
@@ -222,6 +240,8 @@ impl DomainError {
             DomainError::SubprocessStdoutOverflow { .. } => 31,
             DomainError::SubprocessArgvInvalid { .. } => 32,
             DomainError::DaemonUnavailable { .. } => 19,
+            DomainError::StoreBusy { .. } => 22,
+            DomainError::StoreLocked { .. } => 23,
         }
     }
 }
@@ -317,6 +337,12 @@ mod tests {
             },
             DomainError::DaemonUnavailable {
                 message: "crash loop".into(),
+            },
+            DomainError::StoreBusy {
+                message: "quiesce timeout".into(),
+            },
+            DomainError::StoreLocked {
+                message: "worker vs daemon".into(),
             },
         ]
     }
@@ -442,6 +468,24 @@ mod tests {
                     detail: String::new(),
                 },
                 "SUBPROCESS_ARGV_INVALID",
+            ),
+            (
+                DomainError::DaemonUnavailable {
+                    message: String::new(),
+                },
+                "DAEMON_UNAVAILABLE",
+            ),
+            (
+                DomainError::StoreBusy {
+                    message: String::new(),
+                },
+                "STORE_BUSY",
+            ),
+            (
+                DomainError::StoreLocked {
+                    message: String::new(),
+                },
+                "STORE_LOCKED",
             ),
         ];
         for (err, expected) in cases {
@@ -579,6 +623,18 @@ mod tests {
                     message: String::new(),
                 },
                 19,
+            ),
+            (
+                DomainError::StoreBusy {
+                    message: String::new(),
+                },
+                22,
+            ),
+            (
+                DomainError::StoreLocked {
+                    message: String::new(),
+                },
+                23,
             ),
         ];
         let mut seen: HashSet<i32> = HashSet::new();

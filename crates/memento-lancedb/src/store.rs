@@ -312,7 +312,18 @@ pub(crate) fn row_to_search_hit(
 /// IO-ish failures (object store, HTTP, retries, timeouts, dir creation)
 /// become `IO`; validation/schema problems become `INVALID_INPUT`; missing
 /// tables become `NOT_FOUND`; everything else is `INTERNAL` (logged).
+///
+/// REQ-DAEMON-009: a genuine store-lock conflict (another holder — daemon
+/// vs worker, or a concurrent writer) surfaces the `STORE_LOCKED` tier,
+/// never a generic IO/INTERNAL. LanceDB 0.33 / lance 9.0 use optimistic
+/// concurrency (no connection-level lock), so lock conflicts materialize
+/// as lock-shaped messages or Windows sharing violations at write time.
 pub fn map_error(context: &str, err: lancedb::Error) -> DomainError {
+    if is_lock_conflict(&err) {
+        return DomainError::StoreLocked {
+            message: format!("{context}: {err}"),
+        };
+    }
     match err {
         lancedb::Error::TableNotFound { name, .. }
         | lancedb::Error::DatabaseNotFound { name }
@@ -342,6 +353,29 @@ pub fn map_error(context: &str, err: lancedb::Error) -> DomainError {
             message: format!("{context}: {other}"),
         },
     }
+}
+
+/// Whether a `lancedb::Error` is a genuine store-lock conflict
+/// (REQ-DAEMON-009 STORE_LOCKED tier). Token-based matching on the
+/// rendered message — precise enough to avoid false positives on words
+/// like "blocked" or "clock":
+///
+/// * lock messages from lance / object_store ("already locked",
+///   "dataset is locked", "lock not acquired", "waiting for lock");
+/// * Windows sharing violations ("being used by another process",
+///   "sharing violation" — os error 32 from a second holder).
+fn is_lock_conflict(err: &lancedb::Error) -> bool {
+    let message = err.to_string().to_lowercase();
+    const LOCK_TOKENS: [&str; 6] = [
+        "already locked",
+        "is locked",
+        "lock not acquired",
+        "waiting for lock",
+        "being used by another process",
+        // Windows ERROR_SHARING_VIOLATION (os error 32).
+        "sharing violation",
+    ];
+    LOCK_TOKENS.iter().any(|token| message.contains(token))
 }
 
 #[cfg(test)]
@@ -378,5 +412,53 @@ mod tests {
             message: "weird".into(),
         };
         assert_eq!(map_error("t", internal).code(), CODE_INTERNAL);
+    }
+
+    #[test]
+    fn lock_conflict_errors_map_to_store_locked() {
+        // REQ-DAEMON-009 STORE_LOCKED tier: genuine lock conflicts from
+        // lance / object_store map to STORE_LOCKED, never a generic IO or
+        // INTERNAL.
+        use memento_domain::error::CODE_STORE_LOCKED;
+
+        // lance "dataset is locked" shape (Runtime wrapper).
+        let runtime_lock = lancedb::Error::Runtime {
+            message: "dataset is locked by another process".into(),
+        };
+        let mapped = map_error("connect", runtime_lock);
+        assert_eq!(mapped.code(), CODE_STORE_LOCKED);
+        assert_eq!(mapped.exit_code(), 23, "REQ-CL-005 exit code");
+
+        // object_store lock-wait timeout shape.
+        let timeout_lock = lancedb::Error::Timeout {
+            message: "timed out waiting for lock on table".into(),
+        };
+        assert_eq!(map_error("connect", timeout_lock).code(), CODE_STORE_LOCKED);
+
+        // Windows sharing violation (os error 32) — rendered message from
+        // an ObjectStore-wrapped io error.
+        let sharing = lancedb::Error::Runtime {
+            message:
+                "object_store error: Generic local: The process cannot access the file because it is being used by another process (os error 32)"
+                    .into(),
+        };
+        assert_eq!(map_error("connect", sharing).code(), CODE_STORE_LOCKED);
+    }
+
+    #[test]
+    fn lock_detection_has_no_false_positives() {
+        // Words containing the "lock" substring (blocked, clock) must NOT
+        // trip the STORE_LOCKED tier — the token matcher is precise.
+        use memento_domain::error::CODE_INTERNAL;
+
+        let blocked = lancedb::Error::Runtime {
+            message: "operation blocked by schema evolution".into(),
+        };
+        assert_eq!(map_error("t", blocked).code(), CODE_INTERNAL);
+
+        let clock = lancedb::Error::Runtime {
+            message: "clock skew detected".into(),
+        };
+        assert_eq!(map_error("t", clock).code(), CODE_INTERNAL);
     }
 }
