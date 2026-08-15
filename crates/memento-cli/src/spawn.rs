@@ -271,6 +271,12 @@ impl DaemonSpawner {
 /// The daemon's pid + cookie-mtime probe: scans `<root>/.daemon-*.cookie`
 /// for an existing daemon (REQ-DAEMON-012 stale cookie tolerance — the
 /// file's existence + mtime is enough to answer `status`).
+///
+/// REQ-DAEMON-013 kill -9 recovery: a cookie whose pid is NOT alive is
+/// stale (a killed daemon leaves its cookie file behind) and must NOT be
+/// trusted — otherwise the next command would "find" a dead daemon and
+/// never respawn. On Windows the pid is liveness-checked; other targets
+/// keep the file-only probe (daemon mode is Windows-first by design).
 fn try_probe_existing(root: &Path) -> Option<ChildHandle> {
     let entries = std::fs::read_dir(root).ok()?;
     let mut newest: Option<(SystemTime, u32)> = None;
@@ -282,6 +288,14 @@ fn try_probe_existing(root: &Path) -> Option<ChildHandle> {
             .and_then(|rest| rest.strip_suffix(".cookie"))
             && let Ok(pid) = pid_str.parse::<u32>()
         {
+            #[cfg(windows)]
+            {
+                // A kill -9'd daemon leaves the cookie file behind; only a
+                // LIVE pid proves a daemon is running (REQ-DAEMON-013).
+                if !memento_mcp::job::is_process_alive(pid) {
+                    continue;
+                }
+            }
             let mtime = entry
                 .metadata()
                 .ok()
@@ -702,13 +716,15 @@ mod tests {
 
     #[test]
     fn try_probe_existing_picks_up_cookie_with_pid_and_mtime() {
-        // REQ-DAEMON-007 status probe: a stale cookie is enough to
-        // answer `status` (the operator sees the daemon pid + the cookie
-        // mtime as `started_at`).
+        // REQ-DAEMON-007 status probe: a cookie whose pid is ALIVE is
+        // enough to answer `status` (the operator sees the daemon pid +
+        // the cookie mtime as `started_at`). The test process's own pid
+        // is guaranteed alive.
         let tmp = tempdir();
-        std::fs::write(tmp.path().join(".daemon-4242.cookie"), "nonce").expect("cookie");
+        let pid = std::process::id();
+        std::fs::write(tmp.path().join(format!(".daemon-{pid}.cookie")), "nonce").expect("cookie");
         let probe = try_probe_existing(tmp.path()).expect("probe");
-        assert_eq!(probe.pid, 4242);
+        assert_eq!(probe.pid, pid);
         // mtime is wall-clock-ish; just assert it's not the epoch.
         assert!(
             probe.started_at.timestamp() > 1_000_000_000,
@@ -720,13 +736,200 @@ mod tests {
     #[test]
     fn try_probe_existing_picks_the_newest_cookie() {
         // Multiple cookies (a kill -9 left a stale one) — the probe
-        // returns the NEWEST mtime (REB-DAEMON-013 stale cookie tolerance).
+        // returns the NEWEST LIVE cookie (REB-DAEMON-013 stale cookie
+        // tolerance). Dead-pid cookies are ignored entirely.
         let tmp = tempdir();
-        std::fs::write(tmp.path().join(".daemon-100.cookie"), "old").expect("old cookie");
-        // Touch the new cookie so its mtime is strictly greater.
+        let pid = std::process::id();
+        std::fs::write(tmp.path().join(".daemon-999999.cookie"), "stale-dead")
+            .expect("dead cookie");
+        // Touch the live cookie so its mtime is strictly greater.
         std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(tmp.path().join(".daemon-200.cookie"), "new").expect("new cookie");
+        std::fs::write(tmp.path().join(format!(".daemon-{pid}.cookie")), "live")
+            .expect("live cookie");
         let probe = try_probe_existing(tmp.path()).expect("probe");
-        assert_eq!(probe.pid, 200, "newest wins");
+        assert_eq!(probe.pid, pid, "live pid wins");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn try_probe_existing_ignores_stale_cookie_of_dead_pid() {
+        // REQ-DAEMON-013 kill -9 recovery: a killed daemon leaves its
+        // cookie file behind; the probe must NOT trust a dead pid,
+        // otherwise the next command would "find" a daemon that is not
+        // there and never respawn.
+        let tmp = tempdir();
+        std::fs::write(tmp.path().join(".daemon-424242.cookie"), "stale").expect("stale cookie");
+        assert!(
+            try_probe_existing(tmp.path()).is_none(),
+            "dead-pid cookie must not resolve to a live daemon"
+        );
+    }
+
+    /// A cheap long-lived fake "daemon" process (ping), with its cookie
+    /// planted at `root`. Never `.wait()`ed — the tests kill it (taskkill
+    /// / job object) and assert its death; that is the point.
+    #[allow(clippy::zombie_processes)]
+    #[cfg(windows)]
+    fn spawn_fake_daemon(root: &Path) -> std::process::Child {
+        let child = Command::new("ping")
+            .args(["127.0.0.1", "-n", "100", "-w", "1000"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fake daemon spawns");
+        std::fs::write(root.join(format!(".daemon-{}.cookie", child.id())), "nonce")
+            .expect("cookie");
+        child
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[allow(clippy::zombie_processes)]
+    async fn next_start_respawns_after_kill_9_leaves_stale_cookie() {
+        // REQ-DAEMON-013 GIVEN: a kill -9'd daemon leaves a stale cookie;
+        // the NEXT command must respawn a fresh daemon (new pid) instead
+        // of trusting the dead pid. The fake daemon is `ping`.
+        let tmp = tempdir();
+        let old = spawn_fake_daemon(tmp.path());
+        let old_pid = old.id();
+        // kill -9 the fake daemon (taskkill /F = SIGKILL equivalent).
+        let kill = Command::new("taskkill")
+            .args(["/F", "/PID", &old_pid.to_string()])
+            .output()
+            .expect("taskkill");
+        assert!(kill.status.success(), "fake daemon killed");
+        // The cookie file survives the kill — the probe must see through it.
+        assert!(
+            tmp.path()
+                .join(format!(".daemon-{old_pid}.cookie"))
+                .exists(),
+            "stale cookie remains after kill -9"
+        );
+        assert!(
+            try_probe_existing(tmp.path()).is_none(),
+            "stale cookie ignored after kill -9"
+        );
+
+        // The respawn: a fresh fake daemon with a NEW pid, through the
+        // production spawn helper (breakaway + startup job + env).
+        let opts = SpawnerOptions {
+            root: tmp.path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (child, job) = spawn_detached_with_startup_job(
+            &PathBuf::from("ping.exe"),
+            &["127.0.0.1", "-n", "100", "-w", "1000"],
+            &opts,
+        )
+        .expect("respawn");
+        let new_pid = child.id();
+        job.disarm_kill_on_close().expect("disarm");
+        drop(job);
+        assert_ne!(new_pid, old_pid, "fresh daemon pid after kill -9");
+        // Cleanup: force-kill so the test leaves no zombies.
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &new_pid.to_string()])
+            .output();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    // The env lock must stay held while `DaemonSpawner::stop` reads
+    // process env and awaits the shutdown roundtrip. Current-thread
+    // tokio runtime + std Mutex cannot deadlock this task; the guard
+    // only serializes cross-test env mutation.
+    #[allow(clippy::zombie_processes, clippy::await_holding_lock)]
+    async fn stop_force_kills_when_cooperative_exit_unavailable() {
+        // REQ-DAEMON-007: `daemon stop` leaves zero processes. When the
+        // cooperative sys.shutdown roundtrip cannot reach the daemon (no
+        // pipe listener), the spawner falls back to a force-kill of the
+        // cookie's pid — the fake daemon must be dead afterwards.
+        use memento_mcp::job::is_process_alive;
+        use std::time::{Duration, Instant};
+
+        // The stop path reads MEMENTO_TENANT/TOKEN/AGENT_ID to build the
+        // shutdown HELLO — serialize env mutation across the tests in
+        // this binary.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let tmp = tempdir();
+        let fake = spawn_fake_daemon(tmp.path());
+        let pid = fake.id();
+        // SAFETY: serialized via ENV_LOCK.
+        unsafe {
+            std::env::set_var("MEMENTO_TENANT", "11111111-1111-4111-8111-111111111111");
+            std::env::set_var("MEMENTO_TOKEN", "memo_stop_test_token");
+            std::env::set_var("MEMENTO_AGENT_ID", "agent-stop-test");
+        }
+        let result = DaemonSpawner::stop(tmp.path()).await;
+        unsafe {
+            std::env::remove_var("MEMENTO_TENANT");
+            std::env::remove_var("MEMENTO_TOKEN");
+            std::env::remove_var("MEMENTO_AGENT_ID");
+        }
+        assert!(
+            result.is_ok(),
+            "stop succeeds via force-kill fallback: {result:?}"
+        );
+        let start = Instant::now();
+        let mut dead = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            if !is_process_alive(pid) {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(dead, "stop → zero processes (fake daemon {pid} dead)");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn concurrent_starts_with_existing_cookie_return_same_pid() {
+        // REQ-DAEMON-003 GIVEN (race → one PID): two concurrent first
+        // clients that find a live daemon both resolve to the SAME pid —
+        // the probe-based idempotency holds under concurrency (the true
+        // no-cookie race is serialized by the spawn lock + LockBusy
+        // retry, covered by the lock tests + the U3 retry policy).
+        let tmp = tempdir();
+        let pid = std::process::id();
+        std::fs::write(tmp.path().join(format!(".daemon-{pid}.cookie")), "nonce").expect("cookie");
+        let opts = SpawnerOptions {
+            root: tmp.path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (a, b) = tokio::join!(DaemonSpawner::start(&opts), DaemonSpawner::start(&opts));
+        assert_eq!(a.expect("a").pid, pid, "client A sees the daemon");
+        assert_eq!(b.expect("b").pid, pid, "client B sees the SAME daemon");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn spawn_race_second_caller_gets_lock_busy_not_a_second_pid() {
+        // REQ-DAEMON-003 race: while the first spawn holds the per-root
+        // lock (no cookie yet), a second spawner MUST NOT create a second
+        // process — it fails with LockBusy (the U3 policy then retries
+        // and, once the first daemon is ready, probes the same pid).
+        let tmp = tempdir();
+        let lock_path = tmp.path().join(SPAWN_LOCK_NAME);
+        let _guard = SpawnLockGuard::acquire(&lock_path).expect("first holds the lock");
+        let opts = SpawnerOptions {
+            root: tmp.path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let err = DaemonSpawner::start(&opts)
+            .await
+            .expect_err("second spawner");
+        assert!(
+            matches!(err, SpawnError::LockBusy(_)),
+            "no second daemon while the first is spawning: {err}"
+        );
     }
 }

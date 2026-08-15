@@ -156,6 +156,36 @@ mod imp {
         };
         queried && code == STILL_ACTIVE.0 as u32
     }
+
+    /// The resident working set of `pid` in bytes (REQ-DAEMON-001
+    /// acceptance: the CLI client working set must stay ≤ 150 MB while the
+    /// daemon serves it). Uses `GetProcessMemoryInfo` (psapi, kernel32).
+    /// `None` when the process is gone or cannot be opened.
+    pub fn working_set_bytes(pid: u32) -> Option<u64> {
+        use windows::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        // SAFETY: OpenProcess returns a handle we own and close in every
+        // path; the query asks only for limited info (no privilege needs).
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        let mut counters = PROCESS_MEMORY_COUNTERS::default();
+        // SAFETY: `handle` is a valid process handle; `counters` is a valid
+        // out buffer of exactly `PROCESS_MEMORY_COUNTERS` bytes.
+        let queried = unsafe {
+            GetProcessMemoryInfo(
+                handle,
+                &mut counters,
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            )
+        }
+        .is_ok();
+        // SAFETY: `handle` is owned by this function and not used after.
+        unsafe {
+            let _ = CloseHandle(handle);
+        };
+        queried.then_some(counters.WorkingSetSize as u64)
+    }
 }
 
 #[cfg(not(windows))]
@@ -185,9 +215,14 @@ mod imp {
     pub fn is_process_alive(_pid: u32) -> bool {
         false
     }
+
+    /// Non-Windows stub (daemon mode is Windows-first, design D5).
+    pub fn working_set_bytes(_pid: u32) -> Option<u64> {
+        None
+    }
 }
 
-pub use imp::{StartupJob, is_process_alive};
+pub use imp::{StartupJob, is_process_alive, working_set_bytes};
 
 #[cfg(test)]
 mod tests {

@@ -151,3 +151,221 @@ async fn dispatcher_routes_sys_via_daemon_fixture() {
     assert_eq!(s["phase"], "shutting_down");
     assert!(fixture.state().shutdown_requested(), "flag raised");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_and_mcp_search_agree_over_one_daemon() {
+    // REQ-DAEMON-008 GIVEN: one daemon serving a CLI-side dispatch
+    // (memento-cli's pipe transport) AND the MCP stdio proxy returns
+    // identical ids + scores for the same query — no lock errors, one
+    // store owner. The CLI's delegable commands route through this same
+    // `DaemonClient` transport once the command layer wires Remote.
+    use std::sync::Arc;
+
+    use memento_application::{AppService, SystemClock};
+    use memento_mcp::dispatcher::McpCommand;
+    use memento_mcp::dispatcher::MemoryTool;
+    use memento_mcp::proxy::ProxyConfig;
+    use memento_mcp::proxy::StdioProxy;
+    use memento_ports::IngestTextRequest;
+    use memento_ports::SearchQuery;
+    use rmcp::ClientHandler;
+    use rmcp::ServiceExt;
+    use rmcp::model::CallToolRequestParams;
+    use serde_json::{Value, json};
+
+    struct TestClient;
+    impl ClientHandler for TestClient {}
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = memento_testkit::TempStore::new();
+
+    // Seed BEFORE the daemon opens the same root (design D10 rule: no two
+    // concurrent store holders).
+    let direct_hits: Vec<(String, f32)> = {
+        let parse: Arc<dyn memento_ports::ParsePort> = Arc::new(memento_parse::ParseService::new(
+            memento_parse::anydoc::AnydocConfig {
+                command: memento_parse::anydoc::AnydocCommand {
+                    program: "never-invoked".into(),
+                    args: vec![],
+                    env: vec![],
+                },
+                timeout: std::time::Duration::from_secs(1),
+                stdout_limit: 1024,
+                staging_dir: std::env::temp_dir(),
+            },
+        ));
+        let embedder: Option<Arc<dyn memento_ports::EmbedPort>> =
+            Some(Arc::new(memento_testkit::StubEmbedPort::default()));
+        let app = AppService::open(
+            &store.ctx(),
+            dir.path(),
+            parse,
+            embedder,
+            Arc::new(SystemClock),
+        )
+        .await
+        .expect("seed app opens");
+        app.ingest_text(
+            &store.ctx(),
+            IngestTextRequest {
+                text: "dual carrier search over one shared daemon".into(),
+                doc_id: None,
+                metadata: None,
+            },
+        )
+        .await
+        .expect("seed ingest");
+        let hits = app
+            .search(
+                &store.ctx(),
+                SearchQuery {
+                    query: "shared daemon".into(),
+                    top_k: 10,
+                    workspace_id: *store.ctx().workspace_id(),
+                    rrf_enabled: false,
+                    rrf_k: 60.0,
+                    rerank: false,
+                    filters: None,
+                },
+            )
+            .await
+            .expect("direct search");
+        let pairs: Vec<(String, f32)> = hits
+            .iter()
+            .map(|h| (h.chunk_id.to_string(), h.score))
+            .collect();
+        assert!(!pairs.is_empty(), "seeded search must produce hits");
+        pairs
+    };
+
+    let fixture = DaemonFixture::start(options(&store, &dir)).await;
+    let token = format!("memo_it_{}", store.tenant_id());
+
+    // Carrier 1 — CLI transport: memento-cli's DaemonClient dispatches
+    // memory.search with wire args.
+    let mut cli = connect(&fixture, &token).await;
+    let ws = store.ctx().workspace_id().to_string();
+    let cli_resp = cli
+        .dispatch(DispatchCommand::Mcp(McpCommand::Memory {
+            tool: MemoryTool::Search,
+            args: json!({ "query": "shared daemon", "workspace_id": ws, "top_k": 10 }),
+        }))
+        .await
+        .expect("CLI-side search over the pipe");
+    let cli_hits: Vec<(String, f32)> = cli_resp["hits"]
+        .as_array()
+        .expect("hits array")
+        .iter()
+        .map(|h| {
+            (
+                h["chunk_id"].as_str().expect("chunk_id").to_string(),
+                h["score"].as_f64().expect("score") as f32,
+            )
+        })
+        .collect();
+    assert_eq!(cli_hits, direct_hits, "CLI carrier matches direct");
+
+    // Carrier 2 — MCP stdio proxy over the SAME daemon.
+    let proxy = StdioProxy::connect(&ProxyConfig {
+        root: fixture.root().to_path_buf(),
+        token: token.clone(),
+        agent_id: "agent-it".into(),
+        tenant_id: fixture.tenant_id().to_string(),
+        locale: Some("es".into()),
+        no_embeddings: true,
+        pipe_timeout: std::time::Duration::from_secs(5),
+    })
+    .await
+    .expect("proxy connects");
+    let (server_half, client_half) = tokio::io::duplex(1 << 20);
+    let task = tokio::spawn(async move {
+        let running = proxy.serve(server_half).await.expect("proxy serve");
+        let _ = running.waiting().await;
+    });
+    let client = TestClient.serve(client_half).await.expect("stdio client");
+    let args: serde_json::Map<String, Value> = serde_json::from_value(json!({
+        "query": "shared daemon",
+        "workspace_id": store.ctx().workspace_id().to_string(),
+        "top_k": 10,
+    }))
+    .expect("args object");
+    let result = client
+        .call_tool(CallToolRequestParams::new("memory.search").with_arguments(args))
+        .await
+        .expect("proxy search");
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .expect("text block")
+        .text
+        .clone();
+    let value: Value = serde_json::from_str(&text).expect("json");
+    let proxy_hits: Vec<(String, f32)> = value["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|h| {
+            (
+                h["chunk_id"].as_str().expect("chunk_id").to_string(),
+                h["score"].as_f64().expect("score") as f32,
+            )
+        })
+        .collect();
+    assert_eq!(
+        proxy_hits, direct_hits,
+        "MCP carrier matches direct — CLI + MCP agree over one daemon"
+    );
+    task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_shaped_offline_move_survives_quiesce_resume() {
+    // REQ-DAEMON-009: `tenant restore` runs quiesce → offline move →
+    // resume WITHOUT killing the daemon. This test drives the daemon-side
+    // contract with a restore-shaped offline move: quiesce the daemon,
+    // move the tenant store directory (the offline move), resume, and
+    // assert the daemon is alive and serving again (store intact).
+    let (_dir, store) = fixture();
+    let fixture = DaemonFixture::start(options(&store, &_dir)).await;
+
+    let tenant_dir = fixture
+        .root()
+        .join("db")
+        .join("tenants")
+        .join(fixture.tenant_id().to_string());
+    assert!(tenant_dir.exists(), "tenant store exists pre-restore");
+
+    // 1. Quiesce (drains + releases the store handle, R2).
+    let q = fixture
+        .dispatch(DispatchCommand::Sys(SysCommand::Quiesce))
+        .await
+        .expect("quiesce");
+    assert_eq!(q["status"], "ok");
+    assert!(!fixture.state().app_is_open(), "store handle released");
+
+    // 2. Offline move: rename the tenant dir out and back.
+    let moved = tenant_dir.with_extension("restored");
+    std::fs::rename(&tenant_dir, &moved).expect("offline move out");
+    std::fs::rename(&moved, &tenant_dir).expect("offline move back");
+    assert!(tenant_dir.exists(), "store intact after the move");
+
+    // 3. Resume (reopens the store with the preserved adapter Arcs).
+    let r = fixture
+        .dispatch(DispatchCommand::Sys(SysCommand::Resume))
+        .await
+        .expect("resume");
+    assert_eq!(r["status"], "ok");
+    assert_eq!(r["phase"], "resumed");
+    assert!(fixture.state().app_is_open(), "daemon serves again");
+
+    // The daemon is alive and accepts a fresh connection (REQ-DAEMON-009
+    // GIVEN: restore succeeds without killing the daemon).
+    let token = format!("memo_it_{}", store.tenant_id());
+    let mut client = connect(&fixture, &token).await;
+    let v = client
+        .dispatch(DispatchCommand::Sys(SysCommand::Metrics))
+        .await
+        .expect("post-restore metrics");
+    assert_eq!(v["status"], "ok", "daemon alive post-restore: {v}");
+}
