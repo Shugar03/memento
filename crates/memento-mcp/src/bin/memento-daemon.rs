@@ -7,12 +7,12 @@
 //! * Removes the B2 skeleton [`daemonize_via_job_object`] helper (it
 //!   created a Job Object inside the daemon and assigned itself — the
 //!   opposite of what R1 prescribes).
-//! * After readiness (cookie + pipe bound), calls
-//!   [`detach_from_inherited_job`] to defensively assert the daemon is not
-//!   bound to the spawner's Job Object (R1 — production spawners use
-//!   `CREATE_BREAKAWAY_FROM_JOB` so the child breaks away at creation;
-//!   this function logs a warning if the production invariant is
-//!   violated).
+//! * After readiness (cookie + pipe bound), runs
+//!   [`check_startup_job_state`] to report the R1 startup-job state: the
+//!   daemon may still be a member of the spawner's armed startup Job
+//!   Object for a few milliseconds (the spawner disarms it right after
+//!   observing readiness). Membership is expected; a disarmed job cannot
+//!   kill the daemon, so the spawner's handle close is safe.
 //! * Builds a [`DaemonState`] (the B5 dispatcher binding) and wires the
 //!   accept loop to dispatch through [`dispatch_command_with_state`],
 //!   closing the B4 skeleton by giving `sys.quiesce` / `sys.resume` /
@@ -105,20 +105,19 @@ fn write_cookie(root: &Path, nonce: &str) -> io::Result<PathBuf> {
     Ok(final_path)
 }
 
-/// R1 self-detach: defensively assert the daemon is NOT bound to the
-/// spawner's Job Object. Production spawners (B5 `DaemonSpawner::start`)
-/// create a Job with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` and spawn the daemon
-/// with `CREATE_BREAKAWAY_FROM_JOB` so the child breaks away at
-/// creation — at that point there is no inherited job membership to
-/// detach. This function runs AFTER readiness (cookie + pipe bound) and
-/// surfaces a warning if the production invariant is violated.
+/// R1 startup-job state check (REQ-DAEMON-003 GIVEN-3). The daemon may
+/// briefly be a member of the spawner's startup Job Object: the spawner
+/// binds the child to an armed `KILL_ON_JOB_CLOSE` job, waits for
+/// readiness (cookie + pipe — which this daemon has just signaled), and
+/// then disarms the flag and closes the handle. Membership at this
+/// instant is EXPECTED — the disarmed job lets the daemon outlive the
+/// spawner milliseconds later.
 ///
-/// Returns `true` if the daemon is free (no inherited job), `false` if it
-/// is still bound to an inherited job (the spawner should have used
-/// `CREATE_BREAKAWAY_FROM_JOB`). The function never fails the daemon —
-/// the worst case is a `kill -9` on the spawner also kills the daemon,
-/// which is the same behavior as the B2 skeleton.
-fn detach_from_inherited_job() -> bool {
+/// Returns `true` when the daemon is free (no job membership — spawned
+/// standalone, or the spawner already released the job), `false` when it
+/// is still inside the startup job (transient, expected). The function
+/// never fails the daemon; only an API failure is worth a warning.
+fn check_startup_job_state() -> bool {
     use windows::Win32::System::JobObjects::IsProcessInJob;
     use windows::Win32::System::Threading::GetCurrentProcess;
 
@@ -129,19 +128,19 @@ fn detach_from_inherited_job() -> bool {
     let call = unsafe { IsProcessInJob(GetCurrentProcess(), None, &mut in_job) };
     match call {
         Ok(()) if in_job.0 == 0 => {
-            info!("post-readiness job check: not in a job (R1 invariant OK)");
+            info!("post-readiness job check: daemon is not in any job (R1 released)");
             true
         }
         Ok(()) => {
-            warn!(
-                "post-readiness job check: daemon IS in a job (R1 invariant violated); spawning must use CREATE_BREAKAWAY_FROM_JOB"
+            info!(
+                "post-readiness job check: daemon is inside the startup job (expected; spawner disarms it now)"
             );
             false
         }
         Err(err) => {
             warn!(
                 ?err,
-                "post-readiness job check: IsProcessInJob failed; daemon may orphan on spawner crash"
+                "post-readiness job check: IsProcessInJob failed; orphan protection cannot be asserted"
             );
             false
         }
@@ -261,16 +260,14 @@ async fn main() -> Result<(), StartupError> {
     let pipe = DaemonPipe::bind(&name).await?;
     info!(%name, "daemon bound named pipe");
 
-    // --- R1 self-detach (post-readiness) ----------------------------------
+    // --- R1 startup-job state (post-readiness) --------------------------
     // The daemon is fully bound to its (root, tenant) and listening on the
-    // pipe — at this point the spawner (B5 `DaemonSpawner::start`) is free
-    // to close its Job Object handle without killing us. The defensive
-    // check below logs a warning if the production invariant is violated.
-    let detached = detach_from_inherited_job();
+    // pipe — the spawner (`DaemonSpawner::start`) observes readiness now
+    // and disarms + releases its startup Job Object. This check only
+    // reports the transient state (and warns if the API itself fails).
+    let detached = check_startup_job_state();
     if !detached {
-        warn!(
-            "R1 invariant violated: daemon is bound to an inherited Job Object; spawning must use CREATE_BREAKAWAY_FROM_JOB"
-        );
+        info!("R1: daemon still inside the startup job; spawner disarm + release is in flight");
     }
 
     // --- audit logger for auth failures (best-effort) --------------------

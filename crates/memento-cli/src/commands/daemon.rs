@@ -207,6 +207,7 @@ fn spawn_error_to_domain(err: SpawnError) -> DomainError {
         | SpawnError::LockBusy(_) => DomainError::InvalidInput { message },
         SpawnError::ReadinessTimeout(_)
         | SpawnError::SpawnFailedExit(_)
+        | SpawnError::JobObjectFailed(_)
         | SpawnError::Shutdown(_)
         | SpawnError::Connect(_)
         | SpawnError::Io(_) => DomainError::Internal { message },

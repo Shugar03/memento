@@ -3,14 +3,18 @@
 //! B5 scope:
 //!
 //! * [`DaemonSpawner::start`] — spawn `memento-daemon` as a detached child
-//!   (Windows: `CREATE_BREAKAWAY_FROM_JOB` so the child is never bound to
-//!   the spawner's Job Object — R1), wait for readiness (cookie file
-//!   present + named-pipe connectable), return a [`ChildHandle`]
-//!   carrying the daemon pid and the cookie mtime as `started_at`. A
-//!   per-root `.daemon-spawn.lock` file (R1 self-detach guard, design D6)
-//!   serializes concurrent first-client spawns so the second caller
-//!   waits for the first to become ready instead of racing a second
-//!   bind on the same pipe name.
+//!   (Windows: `CREATE_BREAKAWAY_FROM_JOB` so the child starts outside any
+//!   job the spawner might be in), bind it to an armed startup Job Object
+//!   (`KILL_ON_JOB_CLOSE`, design R1), wait for readiness (cookie file
+//!   present + named-pipe connectable), then **disarm** the job
+//!   (`disarm_kill_on_close`) before its handle drops. Spawner death
+//!   pre-readiness closes the armed job → the daemon dies with it (spec
+//!   GIVEN-3: no orphan); post-readiness the disarmed job lets the daemon
+//!   outlive any client. Returns a [`ChildHandle`] carrying the daemon pid
+//!   and the cookie mtime as `started_at`. A per-root `.daemon-spawn.lock`
+//!   file (design D6) serializes concurrent first-client spawns so the
+//!   second caller waits for the first to become ready instead of racing a
+//!   second bind on the same pipe name.
 //! * [`DaemonSpawner::stop`] — send `sys.shutdown` through the named
 //!   pipe (the B5 dispatcher body in `memento-mcp::dispatcher`), then
 //!   fall back to a force-kill of the pid if the cooperative exit
@@ -25,7 +29,7 @@
 //! (REQ-DAEMON-001/007).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
@@ -33,6 +37,7 @@ use memento_domain::TenantId;
 use memento_mcp::daemon::pipe_name;
 use memento_mcp::dispatcher::{Command as DispatchCommand, SysCommand};
 use memento_mcp::frame;
+use memento_mcp::job::StartupJob;
 use thiserror::Error;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -71,6 +76,12 @@ pub enum SpawnError {
     /// pipe never bound).
     #[error("daemon exited before becoming ready (status: {0:?})")]
     SpawnFailedExit(std::process::ExitStatus),
+    /// The startup Job Object could not be created or the child could not
+    /// be bound to it (R1 / REQ-DAEMON-003 GIVEN-3). Without the job,
+    /// spawner death pre-readiness could orphan the daemon, so the spawn
+    /// fails instead of degrading.
+    #[error("startup job object failed: {0}")]
+    JobObjectFailed(String),
     /// The cookie file never appeared within the readiness timeout
     /// (REQ-DAEMON-003 GIVEN).
     #[error("daemon did not become ready within {0:?}")]
@@ -96,6 +107,7 @@ impl SpawnError {
             SpawnError::LockBusy(_) => "lock_busy",
             SpawnError::BinaryNotFound => "binary_not_found",
             SpawnError::SpawnFailedExit(_) => "spawn_failed",
+            SpawnError::JobObjectFailed(_) => "job_object_failed",
             SpawnError::ReadinessTimeout(_) => "readiness_timeout",
             SpawnError::Io(_) => "io",
             SpawnError::Connect(_) => "connect",
@@ -167,54 +179,44 @@ impl DaemonSpawner {
         // `memento` (cargo bins install side-by-side), then PATH.
         let program = locate_daemon_binary()?;
 
-        // Spawn detached. Windows: `CREATE_BREAKAWAY_FROM_JOB` is the
-        // production mechanism for R1 — the child breaks away from any
-        // Job Object the spawner might be assigned to at creation time,
-        // so the spawner's handle close (or crash) does not cascade.
-        #[cfg(windows)]
-        let mut cmd = {
-            use std::os::windows::process::CommandExt;
-            let mut c = Command::new(&program);
-            c.creation_flags(0x0100_0000); // CREATE_BREAKAWAY_FROM_JOB
-            c
-        };
-        #[cfg(not(windows))]
-        let mut cmd = Command::new(&program);
-        cmd.env("MEMENTO_ROOT", &opts.root)
-            .env(
-                "MEMENTO_NO_EMBEDDINGS",
-                if opts.no_embeddings { "1" } else { "0" },
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(loc) = &opts.locale {
-            cmd.env("MEMENTO_LOCALE", loc);
-        }
-        let child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                SpawnError::BinaryNotFound
-            } else {
-                SpawnError::Io(e)
-            }
-        })?;
+        // Spawn detached + bind to the armed startup Job Object (R1,
+        // REQ-DAEMON-003 GIVEN-3). `CREATE_BREAKAWAY_FROM_JOB` makes the
+        // child start outside any job the spawner might be in, so the
+        // startup job can bind it.
+        let (child, job) = spawn_detached_with_startup_job(&program, &[], opts)?;
         let pid = child.id();
         info!(
             pid,
             program = %program.display(),
-            "spawned memento-daemon (CREATE_BREAKAWAY_FROM_JOB)"
+            "spawned memento-daemon (startup job armed with KILL_ON_JOB_CLOSE)"
         );
 
         // Wait for readiness (cookie file + pipe) — B5 default 10 s.
         // A polling loop is fine: the daemon writes the cookie file at
         // the END of its startup sequence, so the cookie appearing is
-        // the readiness signal. We poll every 50 ms.
+        // the readiness signal. We poll every 50 ms. On any failure the
+        // armed job drops with this function — spawner death pre-readiness
+        // (or an aborted readiness wait) closes the last job handle and
+        // the daemon is terminated with it (no orphan, spec GIVEN-3).
         let started_at = wait_for_readiness(&opts.root, DEFAULT_READINESS_TIMEOUT).await?;
         info!(
             pid,
             started_at = %started_at.to_rfc3339(),
             "daemon ready"
         );
+
+        // R1 post-readiness release: disarm KILL_ON_JOB_CLOSE BEFORE the
+        // job handle drops, so the daemon outlives this process (design:
+        // "post-readiness daemon survives any client"). If the disarm
+        // fails the daemon dies with this process — degraded but never an
+        // orphan.
+        if let Err(err) = job.disarm_kill_on_close() {
+            warn!(
+                ?err,
+                pid, "startup job disarm failed; daemon will exit with this process"
+            );
+        }
+        drop(job);
 
         // The lock guard drops here, releasing the per-root spawn lock.
         drop(_guard);
@@ -321,6 +323,59 @@ fn locate_daemon_binary() -> Result<PathBuf, SpawnError> {
         }
     }
     Err(SpawnError::BinaryNotFound)
+}
+
+/// Spawn `program` detached (`CREATE_BREAKAWAY_FROM_JOB` on Windows so the
+/// child starts outside any job the spawner might be in) and bind it to an
+/// armed startup Job Object (design R1, REQ-DAEMON-003 GIVEN-3). Returns
+/// the child plus the job; the caller MUST hold the job until readiness
+/// and call [`StartupJob::disarm_kill_on_close`] before the job drops.
+///
+/// `args` is the child's argument vector — empty in production (the daemon
+/// reads env), and the tests pass a long-lived fake child's args.
+///
+/// Failure to create or assign the job fails the spawn: without the orphan
+/// guard the spec GIVEN-3 ("no orphan daemon survives") cannot be honored,
+/// and degrading silently would recreate the deviation this replaces.
+fn spawn_detached_with_startup_job(
+    program: &Path,
+    args: &[&str],
+    opts: &SpawnerOptions,
+) -> Result<(Child, StartupJob), SpawnError> {
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(program);
+        c.creation_flags(0x0100_0000); // CREATE_BREAKAWAY_FROM_JOB
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .env("MEMENTO_ROOT", &opts.root)
+        .env(
+            "MEMENTO_NO_EMBEDDINGS",
+            if opts.no_embeddings { "1" } else { "0" },
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(loc) = &opts.locale {
+        cmd.env("MEMENTO_LOCALE", loc);
+    }
+    let child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            SpawnError::BinaryNotFound
+        } else {
+            SpawnError::Io(e)
+        }
+    })?;
+    // R1 orphan guard: bind the child to an armed KILL_ON_JOB_CLOSE job.
+    let job = StartupJob::create_kill_on_close()
+        .map_err(|err| SpawnError::JobObjectFailed(format!("create job: {err}")))?;
+    job.assign_process(&child)
+        .map_err(|err| SpawnError::JobObjectFailed(format!("assign process: {err}")))?;
+    Ok((child, job))
 }
 
 /// Poll for the cookie file (RQ-DAEMON-003 readiness signal). Returns the
@@ -516,6 +571,78 @@ mod tests {
         tempfile::tempdir().expect("tempdir")
     }
 
+    /// The orphan-guard integration test (REQ-DAEMON-003 GIVEN-3, design
+    /// R1): the production spawn helper binds the child to an armed
+    /// startup Job Object; releasing the job BEFORE readiness (spawner
+    /// death) must kill the child. Uses `ping` as a cheap fake "daemon".
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn spawn_job_orphan_guard_kills_child_released_before_readiness() {
+        use memento_mcp::job::is_process_alive;
+        use std::time::{Duration, Instant};
+
+        let opts = SpawnerOptions {
+            root: tempdir().path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (child, job) = spawn_detached_with_startup_job(
+            &PathBuf::from("ping.exe"),
+            &["127.0.0.1", "-n", "100", "-w", "1000"],
+            &opts,
+        )
+        .expect("spawn + job");
+        let pid = child.id();
+        // Spawner death pre-readiness == the armed job handle closes.
+        drop(job);
+        let start = Instant::now();
+        let mut dead = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            if !is_process_alive(pid) {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(dead, "no orphan: pid {pid} survived the armed job close");
+    }
+
+    /// The post-readiness release integration test (R1): after the spawn
+    /// helper's job is disarmed, closing the handle must leave the child
+    /// alive — the daemon outlives the spawning client.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn spawn_job_post_readiness_release_leaves_child_alive() {
+        use memento_mcp::job::is_process_alive;
+        use std::time::Duration;
+
+        let opts = SpawnerOptions {
+            root: tempdir().path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (child, job) = spawn_detached_with_startup_job(
+            &PathBuf::from("ping.exe"),
+            &["127.0.0.1", "-n", "100", "-w", "1000"],
+            &opts,
+        )
+        .expect("spawn + job");
+        let pid = child.id();
+        job.disarm_kill_on_close().expect("disarm");
+        drop(job);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            is_process_alive(pid),
+            "post-readiness release: pid {pid} must survive"
+        );
+        // Cleanup: force-kill so the test leaves no zombies.
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+    }
+
     #[test]
     fn spawn_error_tiers_are_uniform() {
         // REQ-DAEMON-002: every SpawnError variant maps to a stable
@@ -531,6 +658,10 @@ mod tests {
             (
                 SpawnError::ReadinessTimeout(Duration::from_secs(5)),
                 "readiness_timeout",
+            ),
+            (
+                SpawnError::JobObjectFailed("create job: x".into()),
+                "job_object_failed",
             ),
             (SpawnError::Shutdown("x".into()), "shutdown_failed"),
         ];
