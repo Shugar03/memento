@@ -67,11 +67,11 @@ async fn cli_client_working_set_stays_below_150mb_with_daemon_warm() {
             tokio::spawn(async move {
                 let mut conn = conn;
                 // HELLO.
-                let raw = match timeout(Duration::from_secs(5), frame::read_message(&mut conn)).await
-                {
-                    Ok(Ok(b)) => b,
-                    _ => return,
-                };
+                let raw =
+                    match timeout(Duration::from_secs(5), frame::read_message(&mut conn)).await {
+                        Ok(Ok(b)) => b,
+                        _ => return,
+                    };
                 let hello: Hello = match serde_json::from_slice(&raw) {
                     Ok(h) => h,
                     Err(_) => return,
@@ -98,11 +98,11 @@ async fn cli_client_working_set_stays_below_150mb_with_daemon_warm() {
                 let payload = serde_json::to_vec(&welcome).expect("WELCOME serializes");
                 let _ = frame::write_message(&mut conn, &payload).await;
                 // One request → dispatcher-shaped sys.metrics envelope.
-                let raw = match timeout(Duration::from_secs(5), frame::read_message(&mut conn)).await
-                {
-                    Ok(Ok(b)) => b,
-                    _ => return,
-                };
+                let raw =
+                    match timeout(Duration::from_secs(5), frame::read_message(&mut conn)).await {
+                        Ok(Ok(b)) => b,
+                        _ => return,
+                    };
                 let request: serde_json::Value =
                     serde_json::from_slice(&raw).expect("request JSON");
                 assert_eq!(request["command"], "metrics", "sys.metrics dispatched");

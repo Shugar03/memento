@@ -305,15 +305,9 @@ async fn worker_and_daemon_coexist_on_one_store_both_respond() {
     let clock = TestClock::default();
     let parse: Arc<dyn ParsePort> = Arc::new(NoParse);
     let daemon_app = Arc::new(
-        AppService::open(
-            &ctx,
-            ts.root(),
-            parse,
-            None,
-            Arc::new(AppClock(clock)),
-        )
-        .await
-        .expect("daemon app opens"),
+        AppService::open(&ctx, ts.root(), parse, None, Arc::new(AppClock(clock)))
+            .await
+            .expect("daemon app opens"),
     );
     daemon_app
         .ingest_text(
