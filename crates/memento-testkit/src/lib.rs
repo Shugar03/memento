@@ -16,11 +16,15 @@
 //! of adapter/application crates pull it in.
 
 pub mod clock;
+pub mod daemon_fixture;
 pub mod fixtures;
+pub mod pipe_client_fixture;
 pub mod stub_embed;
 pub mod temp_store;
 
 pub use clock::TestClock;
+pub use daemon_fixture::{DaemonFixture, DaemonFixtureClient, DaemonFixtureOptions};
 pub use fixtures::{SPANISH_CORPUS, accent_pairs, long_spanish_doc, spanish_corpus};
+pub use pipe_client_fixture::PipeClientFixture;
 pub use stub_embed::{StubEmbedPort, deterministic_embed};
 pub use temp_store::TempStore;

@@ -21,6 +21,7 @@
 //! io / parse      | 5, 6, 7, 18
 //! backup          | 8, 9, 17
 //! quota           | 12, 13, 16
+//! daemon          | 19
 //! not found       | 20, 21
 //! subprocess      | 30, 31, 32
 //! ```
@@ -75,6 +76,16 @@ pub const CODE_SUBPROCESS_TIMEOUT: &str = "SUBPROCESS_TIMEOUT";
 pub const CODE_SUBPROCESS_STDOUT_OVERFLOW: &str = "SUBPROCESS_STDOUT_OVERFLOW";
 /// Stable machine-readable code: bash metacharacters in path.
 pub const CODE_SUBPROCESS_ARGV_INVALID: &str = "SUBPROCESS_ARGV_INVALID";
+/// Stable machine-readable code: the daemon could not be reached or
+/// crashed repeatedly (REQ-DAEMON-013 crash loop → bounded attempts →
+/// this tier).
+pub const CODE_DAEMON_UNAVAILABLE: &str = "DAEMON_UNAVAILABLE";
+/// Stable machine-readable code: the store is busy (REQ-DAEMON-009 —
+/// a restore against a store the daemon still holds / quiesce timed out).
+pub const CODE_STORE_BUSY: &str = "STORE_BUSY";
+/// Stable machine-readable code: the store is locked by another holder
+/// (REQ-DAEMON-009 — worker vs daemon coexistence; never corrupt data).
+pub const CODE_STORE_LOCKED: &str = "STORE_LOCKED";
 
 /// Memento domain error. Every variant carries a stable code and a
 /// deterministic CLI exit code (see module docs).
@@ -152,6 +163,20 @@ pub enum DomainError {
     /// Bash metacharacters in path (argv rejected).
     #[error("subprocess argv rejected: {detail}")]
     SubprocessArgvInvalid { detail: String },
+    /// The daemon could not be reached or crashed repeatedly
+    /// (REQ-DAEMON-013: bounded auto-restart exhausted → this tier).
+    #[error("daemon unavailable: {message}")]
+    DaemonUnavailable { message: String },
+    /// The store is busy: a restore ran against a store the daemon still
+    /// holds (REQ-DAEMON-009 — quiesce did not complete / timed out).
+    /// The store and the backup stay untouched.
+    #[error("store busy: {message}")]
+    StoreBusy { message: String },
+    /// The store is locked by another holder (REQ-DAEMON-009 worker
+    /// coexistence): opening it would risk corruption, so the operation
+    /// fails instead.
+    #[error("store locked: {message}")]
+    StoreLocked { message: String },
 }
 
 impl DomainError {
@@ -181,6 +206,9 @@ impl DomainError {
             DomainError::SubprocessTimeout { .. } => CODE_SUBPROCESS_TIMEOUT,
             DomainError::SubprocessStdoutOverflow { .. } => CODE_SUBPROCESS_STDOUT_OVERFLOW,
             DomainError::SubprocessArgvInvalid { .. } => CODE_SUBPROCESS_ARGV_INVALID,
+            DomainError::DaemonUnavailable { .. } => CODE_DAEMON_UNAVAILABLE,
+            DomainError::StoreBusy { .. } => CODE_STORE_BUSY,
+            DomainError::StoreLocked { .. } => CODE_STORE_LOCKED,
         }
     }
 
@@ -211,6 +239,9 @@ impl DomainError {
             DomainError::SubprocessTimeout { .. } => 30,
             DomainError::SubprocessStdoutOverflow { .. } => 31,
             DomainError::SubprocessArgvInvalid { .. } => 32,
+            DomainError::DaemonUnavailable { .. } => 19,
+            DomainError::StoreBusy { .. } => 22,
+            DomainError::StoreLocked { .. } => 23,
         }
     }
 }
@@ -303,6 +334,15 @@ mod tests {
             },
             DomainError::SubprocessArgvInvalid {
                 detail: "metachar".into(),
+            },
+            DomainError::DaemonUnavailable {
+                message: "crash loop".into(),
+            },
+            DomainError::StoreBusy {
+                message: "quiesce timeout".into(),
+            },
+            DomainError::StoreLocked {
+                message: "worker vs daemon".into(),
             },
         ]
     }
@@ -428,6 +468,24 @@ mod tests {
                     detail: String::new(),
                 },
                 "SUBPROCESS_ARGV_INVALID",
+            ),
+            (
+                DomainError::DaemonUnavailable {
+                    message: String::new(),
+                },
+                "DAEMON_UNAVAILABLE",
+            ),
+            (
+                DomainError::StoreBusy {
+                    message: String::new(),
+                },
+                "STORE_BUSY",
+            ),
+            (
+                DomainError::StoreLocked {
+                    message: String::new(),
+                },
+                "STORE_LOCKED",
             ),
         ];
         for (err, expected) in cases {
@@ -560,6 +618,24 @@ mod tests {
                 },
                 32,
             ),
+            (
+                DomainError::DaemonUnavailable {
+                    message: String::new(),
+                },
+                19,
+            ),
+            (
+                DomainError::StoreBusy {
+                    message: String::new(),
+                },
+                22,
+            ),
+            (
+                DomainError::StoreLocked {
+                    message: String::new(),
+                },
+                23,
+            ),
         ];
         let mut seen: HashSet<i32> = HashSet::new();
         for (err, expected) in cases {
@@ -582,5 +658,20 @@ mod tests {
         let v: Value = DomainError::ChunkNotFound { id: ChunkId::new() }.into();
         assert_eq!(v["code"], "CHUNK_NOT_FOUND");
         assert_eq!(v["exit_code"], 21);
+    }
+
+    #[test]
+    fn daemon_unavailable_maps_to_stable_code_and_exit_19() {
+        // REQ-DAEMON-013 tier: a crash loop (or unreachable daemon) must
+        // end in DAEMON_UNAVAILABLE with a deterministic exit code mapped
+        // onto REQ-CL-005 (19 is free in the existing matrix).
+        let err = DomainError::DaemonUnavailable {
+            message: "daemon crash loop after 3 attempts".into(),
+        };
+        assert_eq!(err.code(), CODE_DAEMON_UNAVAILABLE);
+        assert_eq!(err.exit_code(), 19);
+        let v: Value = err.into();
+        assert_eq!(v["code"], "DAEMON_UNAVAILABLE");
+        assert_eq!(v["exit_code"], 19);
     }
 }

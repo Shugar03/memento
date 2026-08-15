@@ -2,9 +2,14 @@
 //!
 //! Thin entry point that:
 //! 1. Resolves startup options from CLI args (root, no-embeddings, locale).
-//! 2. Boots the [`McpServer`] (binds the tenant from `MEMENTO_TOKEN` +
-//!    `MEMENTO_AGENT_ID`, opens the app service, assembles the 15-tool
-//!    registry).
+//! 2. Selects the carrier (REQ-DAEMON-008, design D1/S4.5):
+//!    - Daemon available (root+tenant+config consistent, no
+//!      `MEMENTO_NO_DAEMON`) → the server becomes a THIN stdio→pipe
+//!      proxy ([`memento_mcp::proxy::StdioProxy`]) — zero AppService open
+//!      in this process, so the model stays loaded exactly once per
+//!      tenant (REQ-DAEMON-001 GIVEN-2).
+//!    - Otherwise → direct [`McpServer`] (pre-change behavior; the
+//!      fallback also covers hosts without the daemon).
 //! 3. Serves the registry over the rmcp stdio transport until the client
 //!    closes the pipe.
 //!
@@ -15,8 +20,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use memento_i18n::Locale;
+use memento_mcp::proxy::{ProxyConfig, StdioProxy};
 use memento_mcp::{McpServer, StartupOptions};
 use rmcp::ServiceExt;
+use tracing::warn;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -31,6 +38,28 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Carrier selection (REQ-DAEMON-008): the daemon proxy wins when a
+    // daemon is reachable; any failure to connect falls back to the
+    // direct server (the proxy is an optimization, never a gate — except
+    // that MEMENTO_NO_DAEMON=1 short-circuits it, REQ-DAEMON-004 parity).
+    if let Some(config) = ProxyConfig::from_env() {
+        match StdioProxy::connect(&config).await {
+            Ok(proxy) => return serve_proxy(proxy, &opts).await,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "mcp proxy unavailable; falling back to the direct server (double model load on this host)"
+                );
+            }
+        }
+    }
+
+    serve_direct(opts).await
+}
+
+/// Direct carrier: boot the in-process `McpServer` (opens AppService +
+/// embedder — the pre-change path).
+async fn serve_direct(opts: StartupOptions) -> ExitCode {
     let server = match McpServer::startup(opts).await {
         Ok(server) => server,
         Err(err) => {
@@ -47,7 +76,7 @@ async fn main() -> ExitCode {
         tenant = %server.ctx().tenant_id(),
         locale = server.locale().as_str(),
         tool_count = server.router().list_all().len(),
-        "mcp server starting over stdio"
+        "mcp server starting over stdio (direct)"
     );
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
@@ -55,6 +84,28 @@ async fn main() -> ExitCode {
         Ok(running) => running,
         Err(err) => {
             eprintln!("memento-mcp-server: stdio handshake failed: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let _ = running.waiting().await;
+    ExitCode::SUCCESS
+}
+
+/// Proxy carrier: thin rmcp client over the daemon's named pipe — this
+/// process opens NO AppService (REQ-DAEMON-001 GIVEN-2).
+async fn serve_proxy(proxy: StdioProxy, opts: &StartupOptions) -> ExitCode {
+    tracing::info!(
+        tenant = %proxy.welcome().tenant_id,
+        daemon_pid = proxy.welcome().daemon_pid,
+        tool_count = 15,
+        "mcp server starting over stdio (daemon proxy; no model load in this process)"
+    );
+    let _ = opts;
+    let (stdin, stdout) = rmcp::transport::io::stdio();
+    let running = match proxy.serve((stdin, stdout)).await {
+        Ok(running) => running,
+        Err(err) => {
+            eprintln!("memento-mcp-server: stdio handshake failed (proxy): {err}");
             return ExitCode::from(1);
         }
     };

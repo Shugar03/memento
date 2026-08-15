@@ -7,12 +7,12 @@
 //! * Removes the B2 skeleton [`daemonize_via_job_object`] helper (it
 //!   created a Job Object inside the daemon and assigned itself — the
 //!   opposite of what R1 prescribes).
-//! * After readiness (cookie + pipe bound), calls
-//!   [`detach_from_inherited_job`] to defensively assert the daemon is not
-//!   bound to the spawner's Job Object (R1 — production spawners use
-//!   `CREATE_BREAKAWAY_FROM_JOB` so the child breaks away at creation;
-//!   this function logs a warning if the production invariant is
-//!   violated).
+//! * After readiness (cookie + pipe bound), runs
+//!   [`check_startup_job_state`] to report the R1 startup-job state: the
+//!   daemon may still be a member of the spawner's armed startup Job
+//!   Object for a few milliseconds (the spawner disarms it right after
+//!   observing readiness). Membership is expected; a disarmed job cannot
+//!   kill the daemon, so the spawner's handle close is safe.
 //! * Builds a [`DaemonState`] (the B5 dispatcher binding) and wires the
 //!   accept loop to dispatch through [`dispatch_command_with_state`],
 //!   closing the B4 skeleton by giving `sys.quiesce` / `sys.resume` /
@@ -35,7 +35,7 @@ use memento_application::{AppService, SystemClock};
 use memento_domain::DomainError;
 use memento_embed_fastembed::{FastEmbedEmbedder, FastReranker, ModelLoader, Reranker};
 use memento_mcp::{
-    daemon::{pipe_name, server_handshake_with_timeout, DaemonAuth, DaemonPipe, HandshakeError},
+    daemon::{DaemonAuth, DaemonPipe, HandshakeError, pipe_name, server_handshake_with_timeout},
     dispatcher::{self, Command, DaemonState},
     frame,
     handshake::PROTOCOL_VERSION,
@@ -93,7 +93,7 @@ fn generate_nonce() -> String {
 /// Write the cookie file `<root>/.daemon-<pid>.cookie` (REQ-DAEMON-012).
 /// Atomic-ish: write to a temp file then rename to the final name.
 fn write_cookie(root: &Path, nonce: &str) -> io::Result<PathBuf> {
-    std::fs::create_dir_all(root).map_err(io::Error::from)?;
+    std::fs::create_dir_all(root)?;
     let pid = std::process::id();
     let final_path = root.join(format!(".daemon-{pid}.cookie"));
     let tmp_path = root.join(format!(".daemon-{pid}.cookie.tmp"));
@@ -105,20 +105,19 @@ fn write_cookie(root: &Path, nonce: &str) -> io::Result<PathBuf> {
     Ok(final_path)
 }
 
-/// R1 self-detach: defensively assert the daemon is NOT bound to the
-/// spawner's Job Object. Production spawners (B5 `DaemonSpawner::start`)
-/// create a Job with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` and spawn the daemon
-/// with `CREATE_BREAKAWAY_FROM_JOB` so the child breaks away at
-/// creation — at that point there is no inherited job membership to
-/// detach. This function runs AFTER readiness (cookie + pipe bound) and
-/// surfaces a warning if the production invariant is violated.
+/// R1 startup-job state check (REQ-DAEMON-003 GIVEN-3). The daemon may
+/// briefly be a member of the spawner's startup Job Object: the spawner
+/// binds the child to an armed `KILL_ON_JOB_CLOSE` job, waits for
+/// readiness (cookie + pipe — which this daemon has just signaled), and
+/// then disarms the flag and closes the handle. Membership at this
+/// instant is EXPECTED — the disarmed job lets the daemon outlive the
+/// spawner milliseconds later.
 ///
-/// Returns `true` if the daemon is free (no inherited job), `false` if it
-/// is still bound to an inherited job (the spawner should have used
-/// `CREATE_BREAKAWAY_FROM_JOB`). The function never fails the daemon —
-/// the worst case is a `kill -9` on the spawner also kills the daemon,
-/// which is the same behavior as the B2 skeleton.
-fn detach_from_inherited_job() -> bool {
+/// Returns `true` when the daemon is free (no job membership — spawned
+/// standalone, or the spawner already released the job), `false` when it
+/// is still inside the startup job (transient, expected). The function
+/// never fails the daemon; only an API failure is worth a warning.
+fn check_startup_job_state() -> bool {
     use windows::Win32::System::JobObjects::IsProcessInJob;
     use windows::Win32::System::Threading::GetCurrentProcess;
 
@@ -129,19 +128,19 @@ fn detach_from_inherited_job() -> bool {
     let call = unsafe { IsProcessInJob(GetCurrentProcess(), None, &mut in_job) };
     match call {
         Ok(()) if in_job.0 == 0 => {
-            info!("post-readiness job check: not in a job (R1 invariant OK)");
+            info!("post-readiness job check: daemon is not in any job (R1 released)");
             true
         }
         Ok(()) => {
-            warn!(
-                "post-readiness job check: daemon IS in a job (R1 invariant violated); spawning must use CREATE_BREAKAWAY_FROM_JOB"
+            info!(
+                "post-readiness job check: daemon is inside the startup job (expected; spawner disarms it now)"
             );
             false
         }
         Err(err) => {
             warn!(
                 ?err,
-                "post-readiness job check: IsProcessInJob failed; daemon may orphan on spawner crash"
+                "post-readiness job check: IsProcessInJob failed; orphan protection cannot be asserted"
             );
             false
         }
@@ -232,8 +231,14 @@ async fn main() -> Result<(), StartupError> {
     info!(?cookie_path, "daemon wrote cookie nonce");
 
     // --- AppService open (REQ-DAEMON-002, R2) -----------------------------
-    let app = AppService::open(&ctx, &root, parse.clone(), embedder.clone(), Arc::new(SystemClock))
-        .await?;
+    let app = AppService::open(
+        &ctx,
+        &root,
+        parse.clone(),
+        embedder.clone(),
+        Arc::new(SystemClock),
+    )
+    .await?;
     let app = match reranker.clone() {
         Some(r) => app.with_reranker(r),
         None => app,
@@ -250,19 +255,19 @@ async fn main() -> Result<(), StartupError> {
     ));
 
     // --- pipe bind (REQ-DAEMON-003/012, design D5) — readiness signal #2 --
-    let tid = ctx.tenant_id().clone();
+    let tid = *ctx.tenant_id();
     let name = pipe_name(&root, &tid);
     let pipe = DaemonPipe::bind(&name).await?;
     info!(%name, "daemon bound named pipe");
 
-    // --- R1 self-detach (post-readiness) ----------------------------------
+    // --- R1 startup-job state (post-readiness) --------------------------
     // The daemon is fully bound to its (root, tenant) and listening on the
-    // pipe — at this point the spawner (B5 `DaemonSpawner::start`) is free
-    // to close its Job Object handle without killing us. The defensive
-    // check below logs a warning if the production invariant is violated.
-    let detached = detach_from_inherited_job();
+    // pipe — the spawner (`DaemonSpawner::start`) observes readiness now
+    // and disarms + releases its startup Job Object. This check only
+    // reports the transient state (and warns if the API itself fails).
+    let detached = check_startup_job_state();
     if !detached {
-        warn!("R1 invariant violated: daemon is bound to an inherited Job Object; spawning must use CREATE_BREAKAWAY_FROM_JOB");
+        info!("R1: daemon still inside the startup job; spawner disarm + release is in flight");
     }
 
     // --- audit logger for auth failures (best-effort) --------------------
@@ -315,8 +320,7 @@ async fn main() -> Result<(), StartupError> {
                 pipe_mode::Bytes,
                 pipe_mode::Bytes,
             > = conn;
-            let result =
-                server_handshake_with_timeout(&mut conn, &auth, pipe_timeout).await;
+            let result = server_handshake_with_timeout(&mut conn, &auth, pipe_timeout).await;
             let welcome = match result {
                 Ok(w) => w,
                 Err(ref err) => {
@@ -324,7 +328,7 @@ async fn main() -> Result<(), StartupError> {
                     if let (Some(logger), HandshakeError::AuthFailed(reason)) =
                         (audit_logger.as_ref(), err)
                     {
-                        let _ = logger.error(
+                        logger.error(
                             &auth.ctx,
                             "daemon_handshake",
                             serde_json::json!({ "reason": reason }),
@@ -348,14 +352,16 @@ async fn main() -> Result<(), StartupError> {
 }
 
 /// Per-connection service loop: read one framed request, dispatch through
-/// the B5 [`DaemonState`], write one framed response. Today only `sys.*`
-/// is wired; mcp.* requests still return the B4 routing marker (the mcp
-/// body plumbing lands in B7 once the per-tool AppService calls are
-/// exposed).
+/// the B5 [`DaemonState`], write one framed response.
+///
+/// REQ-DAEMON-012 role gate (D4): a connection that presented
+/// `Role::McpProxy` may only reach the public 15 tools — `sys.*` is
+/// CLI-only. Refusals (and dispatch failures) are answered with a
+/// structured error envelope so the client never hangs on a dead request.
 async fn serve_request<S>(
     conn: &mut S,
     state: Arc<DaemonState>,
-    _welcome: &memento_mcp::handshake::Welcome,
+    welcome: &memento_mcp::handshake::Welcome,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -377,11 +383,40 @@ async fn serve_request<S>(
             return;
         }
     };
+    // Role gate (REQ-DAEMON-012): mcp_proxy connections are confined to
+    // the public 15 tools. The refusal is a structured envelope — the
+    // stdio proxy translates it into a tool-level error.
+    if welcome.role == memento_mcp::handshake::Role::McpProxy && matches!(cmd, Command::Sys(_)) {
+        warn!(
+            path = %cmd.path(),
+            "daemon: role gate refused sys.* for mcp_proxy"
+        );
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "status": "error",
+            "code": "FORBIDDEN",
+            "message": "sys.* is CLI-only (REQ-DAEMON-012); the MCP stdio proxy exposes the public 15 tools only",
+            "exit_code": 2,
+        }))
+        .expect("refusal envelope serializes");
+        if let Err(err) = frame::write_message(conn, &payload).await {
+            warn!(?err, "daemon: refusal write failed");
+        }
+        return;
+    }
     let value = match dispatcher::dispatch_command_with_state(&state, cmd).await {
         Ok(v) => v,
         Err(err) => {
+            // Structured error envelope: the client gets a readable
+            // failure instead of a hang (REQ-DAEMON-006: request fails,
+            // daemon keeps serving).
             warn!(?err, "daemon: dispatch failed");
-            return;
+            let err_value: serde_json::Value = err.into();
+            serde_json::json!({
+                "status": "error",
+                "code": err_value["code"],
+                "message": err_value["message"],
+                "exit_code": err_value["exit_code"],
+            })
         }
     };
     let payload = dispatcher::serialize_response(&value);

@@ -225,6 +225,9 @@ pub async fn restore_backup(
 
     // Move the data dirs into place. The target must be quiesced: an
     // existing non-empty lancedb/ means the store is live or dirty.
+    // REQ-DAEMON-009: a store the daemon still holds (quiesce did not
+    // complete / timed out) is BUSY — the restore fails with the
+    // STORE_BUSY tier and touches nothing (store + backup intact).
     std::fs::create_dir_all(&tenant_dir)?;
     let live_lancedb = tenant_dir.join("lancedb");
     if live_lancedb.exists()
@@ -232,9 +235,9 @@ pub async fn restore_backup(
             .map(|mut d| d.next().is_some())
             .unwrap_or(true)
     {
-        return Err(DomainError::InvalidInput {
+        return Err(DomainError::StoreBusy {
             message: "restore requires a quiesced tenant store (non-empty lancedb/ exists; \
-                      wipe the store before restoring)"
+                      quiesce or stop the daemon before restoring)"
                 .into(),
         });
     }
@@ -561,10 +564,13 @@ mod tests {
         let backup = app.backup(&ts.ctx()).await.expect("backup");
 
         // The store is still live (non-empty lancedb/) → structured error.
+        // REQ-DAEMON-009: a restore against a store the daemon still holds
+        // (quiesce did not happen / timed out) fails STORE_BUSY — the store
+        // and the backup stay untouched.
         let err = restore_backup(ts.root(), ts.tenant_id(), &backup.path)
             .await
             .expect_err("live restore must fail");
-        assert_eq!(err.code(), "INVALID_INPUT");
+        assert_eq!(err.code(), "STORE_BUSY", "quiesce-timeout tier");
     }
 
     #[tokio::test]

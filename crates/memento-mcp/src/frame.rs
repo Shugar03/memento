@@ -239,8 +239,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for FramedStream<S> {
             if this.read.payload_filled < this.read.payload.len() {
                 let n = (this.read.payload.len() - this.read.payload_filled).min(buf.remaining());
                 let mut pbuf = ReadBuf::new(
-                    &mut this.read.payload
-                        [this.read.payload_filled..this.read.payload_filled + n],
+                    &mut this.read.payload[this.read.payload_filled..this.read.payload_filled + n],
                 );
                 match Pin::new(&mut this.inner).poll_read(cx, &mut pbuf) {
                     Poll::Pending => return Poll::Pending,
@@ -371,7 +370,7 @@ fn flush_out<S: AsyncWrite + Unpin>(
                     return Poll::Ready(Err(io::Error::new(
                         io::ErrorKind::WriteZero,
                         "pipe write returned zero",
-                    )))
+                    )));
                 }
                 Poll::Ready(Ok(n)) => {
                     wrote += n;
@@ -399,9 +398,8 @@ mod tests {
         let payload = vec![0xAB; 100];
         let frames = encode(&payload);
         assert_eq!(frames.len(), 1, "one frame for a small payload");
-        let (more, len) =
-            parse_header([frames[0][0], frames[0][1], frames[0][2], frames[0][3]])
-                .expect("valid header");
+        let (more, len) = parse_header([frames[0][0], frames[0][1], frames[0][2], frames[0][3]])
+            .expect("valid header");
         assert!(!more, "no continuation bit");
         assert_eq!(len as usize, 100);
         assert_eq!(&frames[0][FRAME_HEADER..], &payload[..]);
@@ -429,13 +427,17 @@ mod tests {
             );
         }
         let (more, len) =
-            parse_header([frames[0][0], frames[0][1], frames[0][2], frames[0][3]])
-                .expect("header");
-        assert!(more && len as usize == MAX_FRAME, "first frame: 2 KiB + cont");
+            parse_header([frames[0][0], frames[0][1], frames[0][2], frames[0][3]]).expect("header");
+        assert!(
+            more && len as usize == MAX_FRAME,
+            "first frame: 2 KiB + cont"
+        );
         let (more_last, len_last) =
-            parse_header([frames[1][0], frames[1][1], frames[1][2], frames[1][3]])
-                .expect("header");
-        assert!(!more_last && len_last as usize == MAX_FRAME, "last frame: 2 KiB, no cont");
+            parse_header([frames[1][0], frames[1][1], frames[1][2], frames[1][3]]).expect("header");
+        assert!(
+            !more_last && len_last as usize == MAX_FRAME,
+            "last frame: 2 KiB, no cont"
+        );
         // Byte-identical reassembly (REQ-DAEMON-006 GIVEN).
         let mut reassembled = Vec::new();
         for frame in &frames {
@@ -491,7 +493,12 @@ mod tests {
     fn cap_check_bounds_reassembly() {
         assert!(check_cap(MAX_MESSAGE - 1, 1).is_ok());
         let err = check_cap(MAX_MESSAGE, 1).expect_err("over the cap");
-        assert_eq!(err, FrameError::MessageTooLarge { bytes: MAX_MESSAGE + 1 });
+        assert_eq!(
+            err,
+            FrameError::MessageTooLarge {
+                bytes: MAX_MESSAGE + 1
+            }
+        );
     }
 
     #[tokio::test]
@@ -525,7 +532,11 @@ mod tests {
             let payload = vec![0xEE; 2 * MAX_FRAME];
             std::fs::write("F:\\target\\tmp\\cap_dbg.txt", "writer: start\n").ok();
             let res = left.write_all(&payload).await;
-            std::fs::write("F:\\target\\tmp\\cap_dbg.txt", format!("writer: done res={res:?}\n")).ok();
+            std::fs::write(
+                "F:\\target\\tmp\\cap_dbg.txt",
+                format!("writer: done res={res:?}\n"),
+            )
+            .ok();
         });
         let mut one = [0u8; 64];
         let mut acc = Vec::new();
@@ -534,18 +545,33 @@ mod tests {
             reads += 1;
             match right.read(&mut one).await {
                 Ok(0) => {
-                    std::fs::write("F:\\target\\tmp\\cap_dbg.txt", format!("reader: EOF after {reads} reads, acc={}\n", acc.len())).ok();
+                    std::fs::write(
+                        "F:\\target\\tmp\\cap_dbg.txt",
+                        format!("reader: EOF after {reads} reads, acc={}\n", acc.len()),
+                    )
+                    .ok();
                     break;
                 }
                 Ok(n) => {
                     acc.extend_from_slice(&one[..n]);
-                    std::fs::write("F:\\target\\tmp\\cap_dbg.txt", format!("reader: read {n} (read #{reads}), acc={}\n", acc.len())).ok();
+                    std::fs::write(
+                        "F:\\target\\tmp\\cap_dbg.txt",
+                        format!("reader: read {n} (read #{reads}), acc={}\n", acc.len()),
+                    )
+                    .ok();
                     if acc.len() >= 2 * MAX_FRAME {
                         break;
                     }
                 }
                 Err(err) => {
-                    std::fs::write("F:\\target\\tmp\\cap_dbg.txt", format!("reader: error after {reads} reads, acc={} : {err}\n", acc.len())).ok();
+                    std::fs::write(
+                        "F:\\target\\tmp\\cap_dbg.txt",
+                        format!(
+                            "reader: error after {reads} reads, acc={} : {err}\n",
+                            acc.len()
+                        ),
+                    )
+                    .ok();
                     break;
                 }
             }
@@ -587,7 +613,7 @@ mod tests {
         // bounded by a short timeout — the request fails, never hangs. The
         // 4 KiB duplex buffer fills with the first frames of a large message;
         // the writer must fail with TIMEOUT while the peer never reads.
-        let (mut a, b) = duplex(1 << 12);
+        let (a, b) = duplex(1 << 12);
         let mut left = FramedStream::new(a);
         // The peer stays connected but never drains.
         let peer = tokio::spawn(async move {
@@ -611,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn stream_eof_after_clean_close() {
         let (a, b) = duplex(1 << 12);
-        let mut left = FramedStream::new(a);
+        let left = FramedStream::new(a);
         let mut right = FramedStream::new(b);
         drop(left);
         let mut buf = [0u8; 8];

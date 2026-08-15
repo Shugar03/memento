@@ -39,6 +39,9 @@ memento-observability = { path = "../memento-observability" }
 tempfile.workspace = true
 memento-testkit = { path = "../memento-testkit" }
 memento-okf = { path = "../memento-okf" }
+# daemon-persistent B7: pipe client transport for the concurrent-client
+# integration test (REQ-DAEMON-008).
+memento-cli = { path = "../memento-cli" }
 
 [[bin]]
 name = "memento-mcp-server"

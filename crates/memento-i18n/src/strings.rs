@@ -69,6 +69,12 @@ pub enum StringKey {
     ErrSubprocessTimeout,
     ErrSubprocessStdoutOverflow,
     ErrSubprocessArgvInvalid,
+    // REQ-DAEMON-013: bounded auto-restart exhausted.
+    ErrDaemonUnavailable,
+    // REQ-DAEMON-009: restore against a store the daemon still holds.
+    ErrStoreBusy,
+    // REQ-DAEMON-009: store locked by another holder (worker coexistence).
+    ErrStoreLocked,
     // CLI help (REQ-CL-004).
     CliHelpTenantCreate,
     CliHelpIngest,
@@ -134,7 +140,7 @@ pub enum StringKey {
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 96] = [
+    pub const ALL: [StringKey; 99] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -173,6 +179,9 @@ impl StringKey {
         StringKey::ErrSubprocessTimeout,
         StringKey::ErrSubprocessStdoutOverflow,
         StringKey::ErrSubprocessArgvInvalid,
+        StringKey::ErrDaemonUnavailable,
+        StringKey::ErrStoreBusy,
+        StringKey::ErrStoreLocked,
         StringKey::CliHelpTenantCreate,
         StringKey::CliHelpIngest,
         StringKey::CliHelpSearch,
@@ -302,6 +311,15 @@ pub fn es(key: StringKey) -> &'static str {
         StringKey::ErrSubprocessArgvInvalid => {
             "Argumentos del proceso auxiliar inválidos (metacaracteres en la ruta)."
         }
+        StringKey::ErrDaemonUnavailable => {
+            "El daemon persistente no está disponible (agotó los reintentos acotados)."
+        }
+        StringKey::ErrStoreBusy => {
+            "El almacén está ocupado: el daemon aún mantiene el almacén (haga quiesce o deténgalo antes de restaurar)."
+        }
+        StringKey::ErrStoreLocked => {
+            "El almacén está bloqueado por otro proceso (daemon o worker); no se tocaron los datos."
+        }
         // CLI help.
         StringKey::CliHelpTenantCreate => {
             "Crea un tenant y muestra el token de acceso una sola vez."
@@ -344,7 +362,9 @@ pub fn es(key: StringKey) -> &'static str {
         }
         StringKey::CliHelpJson => "Salida en JSON (REQ-CL-003).",
         StringKey::CliHelpNoEmbeddings => "Sin embeddings (REQ-MC-004).",
-        StringKey::CliHelpNoDaemon => "Desactiva el daemon persistente y usa el camino one-shot local (REQ-DAEMON-004).",
+        StringKey::CliHelpNoDaemon => {
+            "Desactiva el daemon persistente y usa el camino one-shot local (REQ-DAEMON-004)."
+        }
         StringKey::CliHelpRootArg => "Raíz de almacenamiento (por defecto ~/.memento).",
         StringKey::CliHelpLocaleArg => "Idioma de la interfaz: es | en.",
         StringKey::CliHelpQueryArg => "Consulta de búsqueda.",
@@ -456,7 +476,16 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::ErrSubprocessTimeout => "Helper subprocess exceeded 60 seconds.",
         StringKey::ErrSubprocessStdoutOverflow => "Helper subprocess output exceeded 50 MB.",
         StringKey::ErrSubprocessArgvInvalid => {
-            "Invalid helper subprocess arguments (shell metacharacters in path)."
+            "Helper subprocess argv rejected (metacharacters in path)."
+        }
+        StringKey::ErrDaemonUnavailable => {
+            "Persistent daemon unavailable (bounded restart attempts exhausted)."
+        }
+        StringKey::ErrStoreBusy => {
+            "Store busy: the daemon still holds the store (quiesce or stop it before restoring)."
+        }
+        StringKey::ErrStoreLocked => {
+            "Store locked by another holder (daemon or worker); no data was touched."
         }
         // CLI help.
         StringKey::CliHelpTenantCreate => "Create a tenant and print the access token once.",
@@ -494,7 +523,9 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpCodeDebug => "Index graph diagnostics (nodes, edges, integrity).",
         StringKey::CliHelpJson => "JSON output (REQ-CL-003).",
         StringKey::CliHelpNoEmbeddings => "No embeddings (REQ-MC-004).",
-        StringKey::CliHelpNoDaemon => "Disable the persistent daemon; run the one-shot in-process path (REQ-DAEMON-004).",
+        StringKey::CliHelpNoDaemon => {
+            "Disable the persistent daemon; run the one-shot in-process path (REQ-DAEMON-004)."
+        }
         StringKey::CliHelpRootArg => "Storage root (default ~/.memento).",
         StringKey::CliHelpLocaleArg => "Interface locale: es | en.",
         StringKey::CliHelpQueryArg => "Search query.",

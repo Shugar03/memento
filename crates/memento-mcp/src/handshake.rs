@@ -88,6 +88,15 @@ pub struct Welcome {
     pub capabilities: Vec<Capability>,
     /// The daemon's fixed spawn config (CONFIG_MISMATCH axis, R3).
     pub spawn: SpawnConfig,
+    /// The client role granted from HELLO (REQ-DAEMON-012 role gate: the
+    /// accept loop confines `mcp_proxy` to the public 15 tools). Old wire
+    /// shapes without the field parse as `Cli`.
+    #[serde(default = "default_role")]
+    pub role: Role,
+}
+
+fn default_role() -> Role {
+    Role::Cli
 }
 
 impl Welcome {
@@ -131,6 +140,7 @@ mod tests {
                 no_embeddings: false,
                 locale: Some("es".into()),
             },
+            role: Role::Cli,
         }
     }
 

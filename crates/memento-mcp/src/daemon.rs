@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use interprocess::os::windows::named_pipe::{
-    pipe_mode, tokio::{PipeListener, PipeStream}, PipeListenerOptions,
+    PipeListenerOptions, pipe_mode,
+    tokio::{PipeListener, PipeStream},
 };
 use memento_application::audit::AuditLogger;
 use memento_domain::{DomainError, TenantContext, TenantId};
@@ -25,7 +26,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::frame;
-use crate::handshake::{Capability, Hello, SpawnConfig, Welcome, PROTOCOL_VERSION};
+use crate::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
 
 /// Default bound on daemon writes to a stalled client (S2.5).
 pub const DEFAULT_PIPE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -161,7 +162,10 @@ fn read_cookie(path: &Path) -> Result<String, HandshakeError> {
 /// WELCOME. Every failure closes the connection; auth failures additionally
 /// leave one audit line in `<root>/logs/<tid>.jsonl` (best-effort — the
 /// audit log must never take the daemon down).
-pub async fn server_handshake<S>(stream: &mut S, auth: &DaemonAuth) -> Result<Welcome, HandshakeError>
+pub async fn server_handshake<S>(
+    stream: &mut S,
+    auth: &DaemonAuth,
+) -> Result<Welcome, HandshakeError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -181,9 +185,8 @@ where
     let raw = tokio::time::timeout(timeout, frame::read_message(stream))
         .await
         .map_err(|_| HandshakeError::Timeout)??;
-    let hello: Hello = serde_json::from_slice(&raw).map_err(|err| {
-        HandshakeError::Protocol(format!("HELLO is not valid JSON: {err}"))
-    })?;
+    let hello: Hello = serde_json::from_slice(&raw)
+        .map_err(|err| HandshakeError::Protocol(format!("HELLO is not valid JSON: {err}")))?;
 
     if hello.proto != PROTOCOL_VERSION {
         return Err(HandshakeError::Protocol(format!(
@@ -222,10 +225,12 @@ where
             no_embeddings: auth.no_embeddings,
             locale: auth.locale.clone(),
         },
+        // Echo the granted role (REQ-DAEMON-012): the accept loop's role
+        // gate keys off this.
+        role: hello.role,
     };
-    let payload = serde_json::to_vec(&welcome).map_err(|err| {
-        HandshakeError::Protocol(format!("WELCOME serialization failed: {err}"))
-    })?;
+    let payload = serde_json::to_vec(&welcome)
+        .map_err(|err| HandshakeError::Protocol(format!("WELCOME serialization failed: {err}")))?;
     tokio::time::timeout(timeout, frame::write_message(stream, &payload))
         .await
         .map_err(|_| HandshakeError::Timeout)??;
@@ -328,7 +333,10 @@ mod tests {
         let name = test_pipe("accept1");
         let pipe = DaemonPipe::bind(&name).await.expect("bind");
         let client_task = tokio::spawn(async move {
-            let client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = PipeStream::connect_by_path(name.as_str()).await.expect("connect");
+            let client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> =
+                PipeStream::connect_by_path(name.as_str())
+                    .await
+                    .expect("connect");
             drop(client);
         });
         let conn = pipe.accept().await.expect("accept one");
@@ -346,10 +354,16 @@ mod tests {
         let pipe = DaemonPipe::bind(&name).await.expect("bind");
 
         let client_task = tokio::spawn(async move {
-            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = PipeStream::connect_by_path(name.as_str()).await.expect("connect");
+            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> =
+                PipeStream::connect_by_path(name.as_str())
+                    .await
+                    .expect("connect");
             let hello = sample_hello("memo_ok-secret", "nonce-123");
-            frame::write_message(&mut client, &serde_json::to_vec(&hello).expect("hello json"))
-                .await
+            frame::write_message(
+                &mut client,
+                &serde_json::to_vec(&hello).expect("hello json"),
+            )
+            .await
         });
         let mut conn = pipe.accept().await.expect("accept");
         let welcome = server_handshake(&mut conn, &auth).await.expect("handshake");
@@ -358,7 +372,7 @@ mod tests {
         assert!(welcome.has_embedding());
         assert!(welcome.has_quiesce());
         assert!(!welcome.spawn.no_embeddings);
-        client_task.await.expect("client task");
+        let _ = client_task.await.expect("client task");
     }
 
     #[tokio::test]
@@ -371,7 +385,10 @@ mod tests {
         let pipe = DaemonPipe::bind(&name).await.expect("bind");
 
         let client_task = tokio::spawn(async move {
-            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = PipeStream::connect_by_path(name.as_str()).await.expect("connect");
+            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> =
+                PipeStream::connect_by_path(name.as_str())
+                    .await
+                    .expect("connect");
             let hello = sample_hello("memo_WRONG-secret", "nonce-456");
             frame::write_message(
                 &mut client,
@@ -380,17 +397,25 @@ mod tests {
             .await
         });
         let mut conn = pipe.accept().await.expect("accept");
-        let err = server_handshake(&mut conn, &auth).await.expect_err("must refuse");
+        let err = server_handshake(&mut conn, &auth)
+            .await
+            .expect_err("must refuse");
         assert!(
             matches!(err, HandshakeError::AuthFailed(ref reason) if reason.contains("token")),
             "AUTH_FAILED tier: {err}"
         );
-        client_task.await.expect("client task");
+        let _ = client_task.await.expect("client task");
 
         // The audit line exists (REQ-DAEMON-005 GIVEN: one auth event).
-        let audit_path = ts.root().join("logs").join(format!("{}.jsonl", ts.ctx().tenant_id()));
+        let audit_path = ts
+            .root()
+            .join("logs")
+            .join(format!("{}.jsonl", ts.ctx().tenant_id()));
         let content = std::fs::read_to_string(&audit_path).expect("audit file");
-        assert!(content.contains("daemon_handshake"), "audit line: {content}");
+        assert!(
+            content.contains("daemon_handshake"),
+            "audit line: {content}"
+        );
         assert!(content.contains("AUTH_FAILED"), "code: {content}");
     }
 
@@ -403,7 +428,10 @@ mod tests {
         let pipe = DaemonPipe::bind(&name).await.expect("bind");
 
         let client_task = tokio::spawn(async move {
-            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = PipeStream::connect_by_path(name.as_str()).await.expect("connect");
+            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> =
+                PipeStream::connect_by_path(name.as_str())
+                    .await
+                    .expect("connect");
             let hello = sample_hello("memo_ok-secret", "nonce-CORRUPTED");
             frame::write_message(
                 &mut client,
@@ -412,12 +440,14 @@ mod tests {
             .await
         });
         let mut conn = pipe.accept().await.expect("accept");
-        let err = server_handshake(&mut conn, &auth).await.expect_err("must refuse");
+        let err = server_handshake(&mut conn, &auth)
+            .await
+            .expect_err("must refuse");
         assert!(
             matches!(err, HandshakeError::AuthFailed(ref reason) if reason.contains("cookie")),
             "AUTH_FAILED tier: {err}"
         );
-        client_task.await.expect("client task");
+        let _ = client_task.await.expect("client task");
     }
 
     #[tokio::test]
@@ -430,7 +460,10 @@ mod tests {
         let pipe = DaemonPipe::bind(&name).await.expect("bind");
 
         let client_task = tokio::spawn(async move {
-            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = PipeStream::connect_by_path(name.as_str()).await.expect("connect");
+            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> =
+                PipeStream::connect_by_path(name.as_str())
+                    .await
+                    .expect("connect");
             let hello = sample_hello("memo_ok-secret", "nonce-789");
             frame::write_message(
                 &mut client,
@@ -439,12 +472,14 @@ mod tests {
             .await
         });
         let mut conn = pipe.accept().await.expect("accept");
-        let err = server_handshake(&mut conn, &auth).await.expect_err("must refuse");
+        let err = server_handshake(&mut conn, &auth)
+            .await
+            .expect_err("must refuse");
         assert!(
             matches!(err, HandshakeError::AuthFailed(ref reason) if reason.contains("missing")),
             "AUTH_FAILED tier: {err}"
         );
-        client_task.await.expect("client task");
+        let _ = client_task.await.expect("client task");
     }
 
     #[tokio::test]
@@ -455,7 +490,10 @@ mod tests {
         let pipe = DaemonPipe::bind(&name).await.expect("bind");
 
         let client_task = tokio::spawn(async move {
-            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = PipeStream::connect_by_path(name.as_str()).await.expect("connect");
+            let mut client: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> =
+                PipeStream::connect_by_path(name.as_str())
+                    .await
+                    .expect("connect");
             let mut hello = sample_hello("memo_ok-secret", "nonce-abc");
             hello.proto = PROTOCOL_VERSION + 1;
             frame::write_message(
@@ -465,12 +503,14 @@ mod tests {
             .await
         });
         let mut conn = pipe.accept().await.expect("accept");
-        let err = server_handshake(&mut conn, &auth).await.expect_err("must refuse");
+        let err = server_handshake(&mut conn, &auth)
+            .await
+            .expect_err("must refuse");
         assert!(
             matches!(err, HandshakeError::Protocol(_)),
             "PROTOCOL tier: {err}"
         );
-        client_task.await.expect("client task");
+        let _ = client_task.await.expect("client task");
     }
     #[tokio::test]
     async fn stalled_client_read_times_out_and_daemon_serves_next() {
@@ -527,10 +567,9 @@ mod tests {
             .expect("second client hello");
         });
         let mut conn2 = pipe.accept().await.expect("accept next conn");
-        let welcome =
-            server_handshake_with_timeout(&mut conn2, &auth, Duration::from_secs(5))
-                .await
-                .expect("second handshake");
+        let welcome = server_handshake_with_timeout(&mut conn2, &auth, Duration::from_secs(5))
+            .await
+            .expect("second handshake");
         assert_eq!(welcome.daemon_pid, std::process::id());
         client2.await.expect("client2");
     }

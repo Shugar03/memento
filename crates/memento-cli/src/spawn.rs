@@ -3,14 +3,18 @@
 //! B5 scope:
 //!
 //! * [`DaemonSpawner::start`] — spawn `memento-daemon` as a detached child
-//!   (Windows: `CREATE_BREAKAWAY_FROM_JOB` so the child is never bound to
-//!   the spawner's Job Object — R1), wait for readiness (cookie file
-//!   present + named-pipe connectable), return a [`ChildHandle`]
-//!   carrying the daemon pid and the cookie mtime as `started_at`. A
-//!   per-root `.daemon-spawn.lock` file (R1 self-detach guard, design D6)
-//!   serializes concurrent first-client spawns so the second caller
-//!   waits for the first to become ready instead of racing a second
-//!   bind on the same pipe name.
+//!   (Windows: `CREATE_BREAKAWAY_FROM_JOB` so the child starts outside any
+//!   job the spawner might be in), bind it to an armed startup Job Object
+//!   (`KILL_ON_JOB_CLOSE`, design R1), wait for readiness (cookie file
+//!   present + named-pipe connectable), then **disarm** the job
+//!   (`disarm_kill_on_close`) before its handle drops. Spawner death
+//!   pre-readiness closes the armed job → the daemon dies with it (spec
+//!   GIVEN-3: no orphan); post-readiness the disarmed job lets the daemon
+//!   outlive any client. Returns a [`ChildHandle`] carrying the daemon pid
+//!   and the cookie mtime as `started_at`. A per-root `.daemon-spawn.lock`
+//!   file (design D6) serializes concurrent first-client spawns so the
+//!   second caller waits for the first to become ready instead of racing a
+//!   second bind on the same pipe name.
 //! * [`DaemonSpawner::stop`] — send `sys.shutdown` through the named
 //!   pipe (the B5 dispatcher body in `memento-mcp::dispatcher`), then
 //!   fall back to a force-kill of the pid if the cooperative exit
@@ -25,7 +29,7 @@
 //! (REQ-DAEMON-001/007).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
@@ -33,6 +37,7 @@ use memento_domain::TenantId;
 use memento_mcp::daemon::pipe_name;
 use memento_mcp::dispatcher::{Command as DispatchCommand, SysCommand};
 use memento_mcp::frame;
+use memento_mcp::job::StartupJob;
 use thiserror::Error;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -71,6 +76,12 @@ pub enum SpawnError {
     /// pipe never bound).
     #[error("daemon exited before becoming ready (status: {0:?})")]
     SpawnFailedExit(std::process::ExitStatus),
+    /// The startup Job Object could not be created or the child could not
+    /// be bound to it (R1 / REQ-DAEMON-003 GIVEN-3). Without the job,
+    /// spawner death pre-readiness could orphan the daemon, so the spawn
+    /// fails instead of degrading.
+    #[error("startup job object failed: {0}")]
+    JobObjectFailed(String),
     /// The cookie file never appeared within the readiness timeout
     /// (REQ-DAEMON-003 GIVEN).
     #[error("daemon did not become ready within {0:?}")]
@@ -96,6 +107,7 @@ impl SpawnError {
             SpawnError::LockBusy(_) => "lock_busy",
             SpawnError::BinaryNotFound => "binary_not_found",
             SpawnError::SpawnFailedExit(_) => "spawn_failed",
+            SpawnError::JobObjectFailed(_) => "job_object_failed",
             SpawnError::ReadinessTimeout(_) => "readiness_timeout",
             SpawnError::Io(_) => "io",
             SpawnError::Connect(_) => "connect",
@@ -104,8 +116,8 @@ impl SpawnError {
     }
 }
 
-/// Inputs for [`DaemonSpawner::start`]: the daemon's bound (root, tenant)
-/// + the spawn-fixed config (`--no-embeddings`, locale). The spawner
+/// Inputs for [`DaemonSpawner::start`]: the daemon's bound `(root, tenant)`
+/// plus the spawn-fixed config (`--no-embeddings`, locale). The spawner
 /// reads `MEMENTO_TOKEN` itself from the process env — the spawner
 /// inherits the spawner's env (D8 — the daemon resolves its own
 /// credentials at startup).
@@ -167,51 +179,44 @@ impl DaemonSpawner {
         // `memento` (cargo bins install side-by-side), then PATH.
         let program = locate_daemon_binary()?;
 
-        // Spawn detached. Windows: `CREATE_BREAKAWAY_FROM_JOB` is the
-        // production mechanism for R1 — the child breaks away from any
-        // Job Object the spawner might be assigned to at creation time,
-        // so the spawner's handle close (or crash) does not cascade.
-        #[cfg(windows)]
-        let mut cmd = {
-            use std::os::windows::process::CommandExt;
-            let mut c = Command::new(&program);
-            c.creation_flags(0x0100_0000); // CREATE_BREAKAWAY_FROM_JOB
-            c
-        };
-        #[cfg(not(windows))]
-        let mut cmd = Command::new(&program);
-        cmd.env("MEMENTO_ROOT", &opts.root)
-            .env("MEMENTO_NO_EMBEDDINGS", if opts.no_embeddings { "1" } else { "0" })
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(loc) = &opts.locale {
-            cmd.env("MEMENTO_LOCALE", loc);
-        }
-        let child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                SpawnError::BinaryNotFound
-            } else {
-                SpawnError::Io(e)
-            }
-        })?;
+        // Spawn detached + bind to the armed startup Job Object (R1,
+        // REQ-DAEMON-003 GIVEN-3). `CREATE_BREAKAWAY_FROM_JOB` makes the
+        // child start outside any job the spawner might be in, so the
+        // startup job can bind it.
+        let (child, job) = spawn_detached_with_startup_job(&program, &[], opts)?;
         let pid = child.id();
         info!(
             pid,
             program = %program.display(),
-            "spawned memento-daemon (CREATE_BREAKAWAY_FROM_JOB)"
+            "spawned memento-daemon (startup job armed with KILL_ON_JOB_CLOSE)"
         );
 
         // Wait for readiness (cookie file + pipe) — B5 default 10 s.
         // A polling loop is fine: the daemon writes the cookie file at
         // the END of its startup sequence, so the cookie appearing is
-        // the readiness signal. We poll every 50 ms.
+        // the readiness signal. We poll every 50 ms. On any failure the
+        // armed job drops with this function — spawner death pre-readiness
+        // (or an aborted readiness wait) closes the last job handle and
+        // the daemon is terminated with it (no orphan, spec GIVEN-3).
         let started_at = wait_for_readiness(&opts.root, DEFAULT_READINESS_TIMEOUT).await?;
         info!(
             pid,
             started_at = %started_at.to_rfc3339(),
             "daemon ready"
         );
+
+        // R1 post-readiness release: disarm KILL_ON_JOB_CLOSE BEFORE the
+        // job handle drops, so the daemon outlives this process (design:
+        // "post-readiness daemon survives any client"). If the disarm
+        // fails the daemon dies with this process — degraded but never an
+        // orphan.
+        if let Err(err) = job.disarm_kill_on_close() {
+            warn!(
+                ?err,
+                pid, "startup job disarm failed; daemon will exit with this process"
+            );
+        }
+        drop(job);
 
         // The lock guard drops here, releasing the per-root spawn lock.
         drop(_guard);
@@ -266,24 +271,38 @@ impl DaemonSpawner {
 /// The daemon's pid + cookie-mtime probe: scans `<root>/.daemon-*.cookie`
 /// for an existing daemon (REQ-DAEMON-012 stale cookie tolerance — the
 /// file's existence + mtime is enough to answer `status`).
+///
+/// REQ-DAEMON-013 kill -9 recovery: a cookie whose pid is NOT alive is
+/// stale (a killed daemon leaves its cookie file behind) and must NOT be
+/// trusted — otherwise the next command would "find" a dead daemon and
+/// never respawn. On Windows the pid is liveness-checked; other targets
+/// keep the file-only probe (daemon mode is Windows-first by design).
 fn try_probe_existing(root: &Path) -> Option<ChildHandle> {
     let entries = std::fs::read_dir(root).ok()?;
     let mut newest: Option<(SystemTime, u32)> = None;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if let Some(rest) = name.strip_prefix(".daemon-") {
-            if let Some(pid_str) = rest.strip_suffix(".cookie") {
-                if let Ok(pid) = pid_str.parse::<u32>() {
-                    let mtime = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .unwrap_or(UNIX_EPOCH);
-                    if newest.map_or(true, |(t, _)| mtime > t) {
-                        newest = Some((mtime, pid));
-                    }
+        if let Some(pid_str) = name
+            .strip_prefix(".daemon-")
+            .and_then(|rest| rest.strip_suffix(".cookie"))
+            && let Ok(pid) = pid_str.parse::<u32>()
+        {
+            #[cfg(windows)]
+            {
+                // A kill -9'd daemon leaves the cookie file behind; only a
+                // LIVE pid proves a daemon is running (REQ-DAEMON-013).
+                if !memento_mcp::job::is_process_alive(pid) {
+                    continue;
                 }
+            }
+            let mtime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(UNIX_EPOCH);
+            if newest.is_none_or(|(t, _)| mtime > t) {
+                newest = Some((mtime, pid));
             }
         }
     }
@@ -295,16 +314,16 @@ fn try_probe_existing(root: &Path) -> Option<ChildHandle> {
 /// Locate `memento-daemon`: first try next to the current `memento`
 /// binary (cargo bins install side-by-side), then walk `PATH`.
 fn locate_daemon_binary() -> Result<PathBuf, SpawnError> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("memento-daemon.exe");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-            let candidate = dir.join("memento-daemon");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("memento-daemon.exe");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        let candidate = dir.join("memento-daemon");
+        if candidate.exists() {
+            return Ok(candidate);
         }
     }
     if let Ok(paths) = std::env::var("PATH") {
@@ -320,12 +339,62 @@ fn locate_daemon_binary() -> Result<PathBuf, SpawnError> {
     Err(SpawnError::BinaryNotFound)
 }
 
+/// Spawn `program` detached (`CREATE_BREAKAWAY_FROM_JOB` on Windows so the
+/// child starts outside any job the spawner might be in) and bind it to an
+/// armed startup Job Object (design R1, REQ-DAEMON-003 GIVEN-3). Returns
+/// the child plus the job; the caller MUST hold the job until readiness
+/// and call [`StartupJob::disarm_kill_on_close`] before the job drops.
+///
+/// `args` is the child's argument vector — empty in production (the daemon
+/// reads env), and the tests pass a long-lived fake child's args.
+///
+/// Failure to create or assign the job fails the spawn: without the orphan
+/// guard the spec GIVEN-3 ("no orphan daemon survives") cannot be honored,
+/// and degrading silently would recreate the deviation this replaces.
+fn spawn_detached_with_startup_job(
+    program: &Path,
+    args: &[&str],
+    opts: &SpawnerOptions,
+) -> Result<(Child, StartupJob), SpawnError> {
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(program);
+        c.creation_flags(0x0100_0000); // CREATE_BREAKAWAY_FROM_JOB
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .env("MEMENTO_ROOT", &opts.root)
+        .env(
+            "MEMENTO_NO_EMBEDDINGS",
+            if opts.no_embeddings { "1" } else { "0" },
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(loc) = &opts.locale {
+        cmd.env("MEMENTO_LOCALE", loc);
+    }
+    let child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            SpawnError::BinaryNotFound
+        } else {
+            SpawnError::Io(e)
+        }
+    })?;
+    // R1 orphan guard: bind the child to an armed KILL_ON_JOB_CLOSE job.
+    let job = StartupJob::create_kill_on_close()
+        .map_err(|err| SpawnError::JobObjectFailed(format!("create job: {err}")))?;
+    job.assign_process(&child)
+        .map_err(|err| SpawnError::JobObjectFailed(format!("assign process: {err}")))?;
+    Ok((child, job))
+}
+
 /// Poll for the cookie file (RQ-DAEMON-003 readiness signal). Returns the
 /// cookie mtime as the `started_at` estimate.
-async fn wait_for_readiness(
-    root: &Path,
-    timeout: Duration,
-) -> Result<DateTime<Utc>, SpawnError> {
+async fn wait_for_readiness(root: &Path, timeout: Duration) -> Result<DateTime<Utc>, SpawnError> {
     let started = std::time::Instant::now();
     loop {
         if let Some(handle) = try_probe_existing(root) {
@@ -355,7 +424,9 @@ impl SpawnLockGuard {
             .create_new(true)
             .open(path)
         {
-            Ok(_) => Ok(Self { path: path.to_path_buf() }),
+            Ok(_) => Ok(Self {
+                path: path.to_path_buf(),
+            }),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 Err(SpawnError::LockBusy(path.to_path_buf()))
             }
@@ -381,21 +452,24 @@ impl Drop for SpawnLockGuard {
 async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnError> {
     use interprocess::os::windows::named_pipe::tokio::PipeStream;
     use memento_mcp::daemon::DEFAULT_PIPE_TIMEOUT;
-    use memento_mcp::handshake::{Hello, Role, Welcome, PROTOCOL_VERSION};
+    use memento_mcp::handshake::{Hello, PROTOCOL_VERSION, Role, Welcome};
     use tokio::io::AsyncReadExt;
 
     // Resolve the pipe name from the canonical root + cookie-discovered
     // tenant id. For simplicity the SHUTDOWN sender reads the cookie
     // tenant id from env (the operator runs `memento daemon stop` in the
     // same shell that holds `MEMENTO_TENANT`).
-    let tenant_str = std::env::var("MEMENTO_TENANT").map_err(|_| SpawnError::MissingEnv("MEMENTO_TENANT"))?;
+    let tenant_str =
+        std::env::var("MEMENTO_TENANT").map_err(|_| SpawnError::MissingEnv("MEMENTO_TENANT"))?;
     let tenant_id: TenantId = tenant_str
         .parse()
         .map_err(|err| SpawnError::Connect(format!("invalid MEMENTO_TENANT: {err}")))?;
     let name = pipe_name(root, &tenant_id);
 
-    let token = std::env::var("MEMENTO_TOKEN").map_err(|_| SpawnError::MissingEnv("MEMENTO_TOKEN"))?;
-    let _agent_id = std::env::var("MEMENTO_AGENT_ID").map_err(|_| SpawnError::MissingEnv("MEMENTO_AGENT_ID"))?;
+    let token =
+        std::env::var("MEMENTO_TOKEN").map_err(|_| SpawnError::MissingEnv("MEMENTO_TOKEN"))?;
+    let _agent_id = std::env::var("MEMENTO_AGENT_ID")
+        .map_err(|_| SpawnError::MissingEnv("MEMENTO_AGENT_ID"))?;
     let locale = std::env::var("MEMENTO_LOCALE").ok();
     let no_embeddings = std::env::var("MEMENTO_NO_EMBEDDINGS").ok().as_deref() == Some("1");
 
@@ -406,13 +480,16 @@ async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnErro
         let n = entry.file_name();
         let n = n.to_string_lossy();
         if n.starts_with(".daemon-") && n.ends_with(".cookie") {
-            cookie = std::fs::read_to_string(entry.path()).ok().map(|s| s.trim().to_string());
+            cookie = std::fs::read_to_string(entry.path())
+                .ok()
+                .map(|s| s.trim().to_string());
             if cookie.is_some() {
                 break;
             }
         }
     }
-    let cookie = cookie.ok_or_else(|| SpawnError::Connect("no cookie file for stop".to_string()))?;
+    let cookie =
+        cookie.ok_or_else(|| SpawnError::Connect("no cookie file for stop".to_string()))?;
 
     let mut stream = tokio::time::timeout(
         DEFAULT_PIPE_TIMEOUT,
@@ -435,7 +512,8 @@ async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnErro
         no_embeddings,
         staging: std::env::temp_dir(),
     };
-    let hello_bytes = serde_json::to_vec(&hello).map_err(|err| SpawnError::Connect(format!("hello serialize: {err}")))?;
+    let hello_bytes = serde_json::to_vec(&hello)
+        .map_err(|err| SpawnError::Connect(format!("hello serialize: {err}")))?;
     frame::write_message(&mut stream, &hello_bytes)
         .await
         .map_err(|err| SpawnError::Connect(format!("hello write: {err}")))?;
@@ -449,7 +527,8 @@ async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnErro
 
     // `sys.shutdown`
     let cmd = DispatchCommand::Sys(SysCommand::Shutdown);
-    let req_bytes = serde_json::to_vec(&cmd).map_err(|err| SpawnError::Connect(format!("request serialize: {err}")))?;
+    let req_bytes = serde_json::to_vec(&cmd)
+        .map_err(|err| SpawnError::Connect(format!("request serialize: {err}")))?;
     frame::write_message(&mut stream, &req_bytes)
         .await
         .map_err(|err| SpawnError::Connect(format!("request write: {err}")))?;
@@ -506,6 +585,78 @@ mod tests {
         tempfile::tempdir().expect("tempdir")
     }
 
+    /// The orphan-guard integration test (REQ-DAEMON-003 GIVEN-3, design
+    /// R1): the production spawn helper binds the child to an armed
+    /// startup Job Object; releasing the job BEFORE readiness (spawner
+    /// death) must kill the child. Uses `ping` as a cheap fake "daemon".
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn spawn_job_orphan_guard_kills_child_released_before_readiness() {
+        use memento_mcp::job::is_process_alive;
+        use std::time::{Duration, Instant};
+
+        let opts = SpawnerOptions {
+            root: tempdir().path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (child, job) = spawn_detached_with_startup_job(
+            &PathBuf::from("ping.exe"),
+            &["127.0.0.1", "-n", "100", "-w", "1000"],
+            &opts,
+        )
+        .expect("spawn + job");
+        let pid = child.id();
+        // Spawner death pre-readiness == the armed job handle closes.
+        drop(job);
+        let start = Instant::now();
+        let mut dead = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            if !is_process_alive(pid) {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(dead, "no orphan: pid {pid} survived the armed job close");
+    }
+
+    /// The post-readiness release integration test (R1): after the spawn
+    /// helper's job is disarmed, closing the handle must leave the child
+    /// alive — the daemon outlives the spawning client.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn spawn_job_post_readiness_release_leaves_child_alive() {
+        use memento_mcp::job::is_process_alive;
+        use std::time::Duration;
+
+        let opts = SpawnerOptions {
+            root: tempdir().path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (child, job) = spawn_detached_with_startup_job(
+            &PathBuf::from("ping.exe"),
+            &["127.0.0.1", "-n", "100", "-w", "1000"],
+            &opts,
+        )
+        .expect("spawn + job");
+        let pid = child.id();
+        job.disarm_kill_on_close().expect("disarm");
+        drop(job);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            is_process_alive(pid),
+            "post-readiness release: pid {pid} must survive"
+        );
+        // Cleanup: force-kill so the test leaves no zombies.
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+    }
+
     #[test]
     fn spawn_error_tiers_are_uniform() {
         // REQ-DAEMON-002: every SpawnError variant maps to a stable
@@ -521,6 +672,10 @@ mod tests {
             (
                 SpawnError::ReadinessTimeout(Duration::from_secs(5)),
                 "readiness_timeout",
+            ),
+            (
+                SpawnError::JobObjectFailed("create job: x".into()),
+                "job_object_failed",
             ),
             (SpawnError::Shutdown("x".into()), "shutdown_failed"),
         ];
@@ -561,13 +716,15 @@ mod tests {
 
     #[test]
     fn try_probe_existing_picks_up_cookie_with_pid_and_mtime() {
-        // REQ-DAEMON-007 status probe: a stale cookie is enough to
-        // answer `status` (the operator sees the daemon pid + the cookie
-        // mtime as `started_at`).
+        // REQ-DAEMON-007 status probe: a cookie whose pid is ALIVE is
+        // enough to answer `status` (the operator sees the daemon pid +
+        // the cookie mtime as `started_at`). The test process's own pid
+        // is guaranteed alive.
         let tmp = tempdir();
-        std::fs::write(tmp.path().join(".daemon-4242.cookie"), "nonce").expect("cookie");
+        let pid = std::process::id();
+        std::fs::write(tmp.path().join(format!(".daemon-{pid}.cookie")), "nonce").expect("cookie");
         let probe = try_probe_existing(tmp.path()).expect("probe");
-        assert_eq!(probe.pid, 4242);
+        assert_eq!(probe.pid, pid);
         // mtime is wall-clock-ish; just assert it's not the epoch.
         assert!(
             probe.started_at.timestamp() > 1_000_000_000,
@@ -579,13 +736,200 @@ mod tests {
     #[test]
     fn try_probe_existing_picks_the_newest_cookie() {
         // Multiple cookies (a kill -9 left a stale one) — the probe
-        // returns the NEWEST mtime (REB-DAEMON-013 stale cookie tolerance).
+        // returns the NEWEST LIVE cookie (REB-DAEMON-013 stale cookie
+        // tolerance). Dead-pid cookies are ignored entirely.
         let tmp = tempdir();
-        std::fs::write(tmp.path().join(".daemon-100.cookie"), "old").expect("old cookie");
-        // Touch the new cookie so its mtime is strictly greater.
+        let pid = std::process::id();
+        std::fs::write(tmp.path().join(".daemon-999999.cookie"), "stale-dead")
+            .expect("dead cookie");
+        // Touch the live cookie so its mtime is strictly greater.
         std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(tmp.path().join(".daemon-200.cookie"), "new").expect("new cookie");
+        std::fs::write(tmp.path().join(format!(".daemon-{pid}.cookie")), "live")
+            .expect("live cookie");
         let probe = try_probe_existing(tmp.path()).expect("probe");
-        assert_eq!(probe.pid, 200, "newest wins");
+        assert_eq!(probe.pid, pid, "live pid wins");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn try_probe_existing_ignores_stale_cookie_of_dead_pid() {
+        // REQ-DAEMON-013 kill -9 recovery: a killed daemon leaves its
+        // cookie file behind; the probe must NOT trust a dead pid,
+        // otherwise the next command would "find" a daemon that is not
+        // there and never respawn.
+        let tmp = tempdir();
+        std::fs::write(tmp.path().join(".daemon-424242.cookie"), "stale").expect("stale cookie");
+        assert!(
+            try_probe_existing(tmp.path()).is_none(),
+            "dead-pid cookie must not resolve to a live daemon"
+        );
+    }
+
+    /// A cheap long-lived fake "daemon" process (ping), with its cookie
+    /// planted at `root`. Never `.wait()`ed — the tests kill it (taskkill
+    /// / job object) and assert its death; that is the point.
+    #[allow(clippy::zombie_processes)]
+    #[cfg(windows)]
+    fn spawn_fake_daemon(root: &Path) -> std::process::Child {
+        let child = Command::new("ping")
+            .args(["127.0.0.1", "-n", "100", "-w", "1000"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fake daemon spawns");
+        std::fs::write(root.join(format!(".daemon-{}.cookie", child.id())), "nonce")
+            .expect("cookie");
+        child
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[allow(clippy::zombie_processes)]
+    async fn next_start_respawns_after_kill_9_leaves_stale_cookie() {
+        // REQ-DAEMON-013 GIVEN: a kill -9'd daemon leaves a stale cookie;
+        // the NEXT command must respawn a fresh daemon (new pid) instead
+        // of trusting the dead pid. The fake daemon is `ping`.
+        let tmp = tempdir();
+        let old = spawn_fake_daemon(tmp.path());
+        let old_pid = old.id();
+        // kill -9 the fake daemon (taskkill /F = SIGKILL equivalent).
+        let kill = Command::new("taskkill")
+            .args(["/F", "/PID", &old_pid.to_string()])
+            .output()
+            .expect("taskkill");
+        assert!(kill.status.success(), "fake daemon killed");
+        // The cookie file survives the kill — the probe must see through it.
+        assert!(
+            tmp.path()
+                .join(format!(".daemon-{old_pid}.cookie"))
+                .exists(),
+            "stale cookie remains after kill -9"
+        );
+        assert!(
+            try_probe_existing(tmp.path()).is_none(),
+            "stale cookie ignored after kill -9"
+        );
+
+        // The respawn: a fresh fake daemon with a NEW pid, through the
+        // production spawn helper (breakaway + startup job + env).
+        let opts = SpawnerOptions {
+            root: tmp.path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (child, job) = spawn_detached_with_startup_job(
+            &PathBuf::from("ping.exe"),
+            &["127.0.0.1", "-n", "100", "-w", "1000"],
+            &opts,
+        )
+        .expect("respawn");
+        let new_pid = child.id();
+        job.disarm_kill_on_close().expect("disarm");
+        drop(job);
+        assert_ne!(new_pid, old_pid, "fresh daemon pid after kill -9");
+        // Cleanup: force-kill so the test leaves no zombies.
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &new_pid.to_string()])
+            .output();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    // The env lock must stay held while `DaemonSpawner::stop` reads
+    // process env and awaits the shutdown roundtrip. Current-thread
+    // tokio runtime + std Mutex cannot deadlock this task; the guard
+    // only serializes cross-test env mutation.
+    #[allow(clippy::zombie_processes, clippy::await_holding_lock)]
+    async fn stop_force_kills_when_cooperative_exit_unavailable() {
+        // REQ-DAEMON-007: `daemon stop` leaves zero processes. When the
+        // cooperative sys.shutdown roundtrip cannot reach the daemon (no
+        // pipe listener), the spawner falls back to a force-kill of the
+        // cookie's pid — the fake daemon must be dead afterwards.
+        use memento_mcp::job::is_process_alive;
+        use std::time::{Duration, Instant};
+
+        // The stop path reads MEMENTO_TENANT/TOKEN/AGENT_ID to build the
+        // shutdown HELLO — serialize env mutation across the tests in
+        // this binary.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let tmp = tempdir();
+        let fake = spawn_fake_daemon(tmp.path());
+        let pid = fake.id();
+        // SAFETY: serialized via ENV_LOCK.
+        unsafe {
+            std::env::set_var("MEMENTO_TENANT", "11111111-1111-4111-8111-111111111111");
+            std::env::set_var("MEMENTO_TOKEN", "memo_stop_test_token");
+            std::env::set_var("MEMENTO_AGENT_ID", "agent-stop-test");
+        }
+        let result = DaemonSpawner::stop(tmp.path()).await;
+        unsafe {
+            std::env::remove_var("MEMENTO_TENANT");
+            std::env::remove_var("MEMENTO_TOKEN");
+            std::env::remove_var("MEMENTO_AGENT_ID");
+        }
+        assert!(
+            result.is_ok(),
+            "stop succeeds via force-kill fallback: {result:?}"
+        );
+        let start = Instant::now();
+        let mut dead = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            if !is_process_alive(pid) {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(dead, "stop → zero processes (fake daemon {pid} dead)");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn concurrent_starts_with_existing_cookie_return_same_pid() {
+        // REQ-DAEMON-003 GIVEN (race → one PID): two concurrent first
+        // clients that find a live daemon both resolve to the SAME pid —
+        // the probe-based idempotency holds under concurrency (the true
+        // no-cookie race is serialized by the spawn lock + LockBusy
+        // retry, covered by the lock tests + the U3 retry policy).
+        let tmp = tempdir();
+        let pid = std::process::id();
+        std::fs::write(tmp.path().join(format!(".daemon-{pid}.cookie")), "nonce").expect("cookie");
+        let opts = SpawnerOptions {
+            root: tmp.path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let (a, b) = tokio::join!(DaemonSpawner::start(&opts), DaemonSpawner::start(&opts));
+        assert_eq!(a.expect("a").pid, pid, "client A sees the daemon");
+        assert_eq!(b.expect("b").pid, pid, "client B sees the SAME daemon");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn spawn_race_second_caller_gets_lock_busy_not_a_second_pid() {
+        // REQ-DAEMON-003 race: while the first spawn holds the per-root
+        // lock (no cookie yet), a second spawner MUST NOT create a second
+        // process — it fails with LockBusy (the U3 policy then retries
+        // and, once the first daemon is ready, probes the same pid).
+        let tmp = tempdir();
+        let lock_path = tmp.path().join(SPAWN_LOCK_NAME);
+        let _guard = SpawnLockGuard::acquire(&lock_path).expect("first holds the lock");
+        let opts = SpawnerOptions {
+            root: tmp.path().to_path_buf(),
+            tenant_id: "11111111-1111-4111-8111-111111111111".parse().expect("tid"),
+            no_embeddings: false,
+            locale: None,
+        };
+        let err = DaemonSpawner::start(&opts)
+            .await
+            .expect_err("second spawner");
+        assert!(
+            matches!(err, SpawnError::LockBusy(_)),
+            "no second daemon while the first is spawning: {err}"
+        );
     }
 }

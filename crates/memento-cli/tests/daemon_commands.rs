@@ -200,7 +200,8 @@ fn start_surfaces_structured_error_when_env_missing() {
         .expect("run daemon start");
     let code = out.status.code().unwrap_or(-1);
     assert_ne!(
-        code, 0,
+        code,
+        0,
         "non-zero exit; stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -237,7 +238,8 @@ fn start_surfaces_structured_error_without_daemon_binary() {
         .expect("run daemon start");
     let code = out.status.code().unwrap_or(-1);
     assert_ne!(
-        code, 0,
+        code,
+        0,
         "missing-binary start exits non-zero; stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );

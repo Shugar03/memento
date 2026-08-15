@@ -4457,10 +4457,21 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "interprocess",
+ "memento-application",
+ "memento-cli",
  "memento-domain",
+ "memento-mcp",
+ "memento-parse",
  "memento-ports",
+ "memento-tenant",
+ "rand 0.10.2",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

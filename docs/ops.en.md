@@ -206,6 +206,73 @@ For bulk ingestion, prefer the persistent MCP server over the one-shot CLI:
 - The server keeps the model resident: pays the load ONCE and stays warm.
 - Recommended flow: `memento-mcp-server.exe` with MEMENTO_TOKEN/MEMENTO_AGENT_ID/MEMENTO_ROOT, then `memory.ingest_document`/`memory.ingest_text` over MCP.
 
+## Daemon mode
+
+By default (since `daemon-persistent`), delegable `memento` commands run
+through one long-lived **daemon process** per `(root, tenant)` that owns the
+embedder, reranker and LanceDB store. The CLI and the MCP stdio server become
+thin clients over a Windows named pipe (same JSON-RPC protocol, ≤2 KB frames).
+The daemon keeps the ONNX model resident — one model load per tenant instead of
+one per invocation. `MEMENTO_NO_DAEMON=1` / `--no-daemon` forces the
+pre-change one-shot path, byte-identical (REQ-DAEMON-004).
+
+### Lifecycle
+
+- **Lazy start** — the first command that finds no daemon spawns
+  `memento-daemon` detached and waits for readiness. Concurrent first clients
+  race on a spawn lock; exactly one daemon ends up listening
+  (REQ-DAEMON-003). Daemon config (`--no-embeddings`, `--locale`, root) is
+  **fixed at spawn**.
+- **Cookie** — the daemon writes `<root>/.daemon-<pid>.cookie` (32-byte hex
+  nonce, owner-only ACL). Clients must present it during the handshake; a
+  missing or corrupt cookie refuses the connection (REQ-DAEMON-012). Stale
+  cookies after a hard kill are cleaned on the next connect.
+- **Auto-restart** — if the daemon dies mid-request, the client respawns it
+  (bounded ≤2 restarts per command with backoff). A crash loop ends in
+  `DAEMON_UNAVAILABLE`, never an infinite spawn loop (REQ-DAEMON-013).
+- **Shutdown** — the daemon exits only via `memento daemon stop` (graceful
+  `sys.shutdown`, force-kill after a bounded grace window), a kill, or a
+  crash. There is **no idle shutdown** in v1.
+
+### Pipe name
+
+The named pipe is `\\.\pipe\memento-<root-hash>-<tenant>`, where
+`<root-hash>` is the first 16 hex chars of `sha256(canonical <root>)` and
+`<tenant>` is the tenant id. The token never appears in the name (design D4).
+The pipe carries an owner-only DACL and the handshake validates
+`MEMENTO_TOKEN` against the tenant's credential store (REQ-DAEMON-012/005).
+
+### Control plane
+
+```bash
+memento daemon status    # PID, uptime, tenant, capabilities, spawn config, pipe name
+memento daemon start     # ensure a daemon runs; idempotent, reports the existing PID
+memento daemon stop      # graceful sys.shutdown; force-kill after the grace window
+```
+
+Control-plane commands never open the store and never load models
+(REQ-DAEMON-007). `status` always exits 0 — a missing daemon is a structured
+`daemon_unavailable` payload, not an exit-code alarm.
+
+### Coexistence with the worker and restore
+
+- **Worker** — the worker is pipe-unaware. A daemon and a worker MUST NOT hold
+  the same tenant store at the same time: quiesce/stop the daemon before
+  starting the worker. If the worker finds the store locked it fails
+  `STORE_LOCKED` and never touches data (REQ-DAEMON-009).
+- **Restore** — `tenant restore` quiesces the daemon before the offline move
+  and resumes it afterwards. A timed-out quiesce aborts the restore with
+  `STORE_BUSY`, leaving the store and the backup untouched (REQ-DAEMON-009).
+
+### Troubleshooting
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Worker fails `STORE_LOCKED` | the daemon holds the tenant store | `memento daemon stop` (or quiesce) before running the worker |
+| Client fails `CONFIG_MISMATCH` | the request asks for a different `--root` / `--no-embeddings` / `--locale` than the running daemon was spawned with | stop the daemon, then re-run the command; config is fixed at spawn (REQ-DAEMON-003) |
+| Command fails `DAEMON_UNAVAILABLE` | daemon is crash-looping or `memento-daemon` is not on PATH | `memento daemon status`, fix the daemon environment, retry |
+| Handshake fails `AUTH_FAILED` | wrong `MEMENTO_TOKEN`, or missing/corrupt `<root>/.daemon-<pid>.cookie` | export the correct token; delete stale `*.cookie` files (also cleaned on connect) |
+
 ## Directory layout
 
 ```
