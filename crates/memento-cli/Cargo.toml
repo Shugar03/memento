@@ -22,6 +22,10 @@ memento-okf = { path = "../memento-okf" }
 memento-observability = { path = "../memento-observability" }
 # stats/code-status inspection reads adapter counters directly (REQ-CL-006).
 memento-lancedb = { path = "../memento-lancedb" }
+# daemon-persistent (B3): pipe client transport + handshake/frame reuse.
+memento-mcp = { path = "../memento-mcp" }
+interprocess.workspace = true
+sha2.workspace = true
 clap.workspace = true
 chrono.workspace = true
 tokio.workspace = true

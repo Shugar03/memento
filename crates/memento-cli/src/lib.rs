@@ -37,6 +37,7 @@ pub mod args;
 pub mod commands;
 pub mod output;
 pub mod startup;
+pub mod transport;
 
 use clap::ArgMatches;
 use memento_domain::DomainError;

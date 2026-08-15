@@ -25,7 +25,10 @@
 //! * [`tools_memory`] — the 7 `memory.*` tools (T-072).
 //! * [`tools_code`] — the 8 read-only `code.*` tools (T-073).
 
+pub mod daemon;
 pub mod errors;
+pub mod frame;
+pub mod handshake;
 pub mod router;
 pub mod tools_code;
 pub mod tools_memory;
