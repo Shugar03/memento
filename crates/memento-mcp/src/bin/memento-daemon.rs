@@ -35,7 +35,7 @@ use memento_application::{AppService, SystemClock};
 use memento_domain::DomainError;
 use memento_embed_fastembed::{FastEmbedEmbedder, FastReranker, ModelLoader, Reranker};
 use memento_mcp::{
-    daemon::{pipe_name, server_handshake_with_timeout, DaemonAuth, DaemonPipe, HandshakeError},
+    daemon::{DaemonAuth, DaemonPipe, HandshakeError, pipe_name, server_handshake_with_timeout},
     dispatcher::{self, Command, DaemonState},
     frame,
     handshake::PROTOCOL_VERSION,
@@ -93,7 +93,7 @@ fn generate_nonce() -> String {
 /// Write the cookie file `<root>/.daemon-<pid>.cookie` (REQ-DAEMON-012).
 /// Atomic-ish: write to a temp file then rename to the final name.
 fn write_cookie(root: &Path, nonce: &str) -> io::Result<PathBuf> {
-    std::fs::create_dir_all(root).map_err(io::Error::from)?;
+    std::fs::create_dir_all(root)?;
     let pid = std::process::id();
     let final_path = root.join(format!(".daemon-{pid}.cookie"));
     let tmp_path = root.join(format!(".daemon-{pid}.cookie.tmp"));
@@ -232,8 +232,14 @@ async fn main() -> Result<(), StartupError> {
     info!(?cookie_path, "daemon wrote cookie nonce");
 
     // --- AppService open (REQ-DAEMON-002, R2) -----------------------------
-    let app = AppService::open(&ctx, &root, parse.clone(), embedder.clone(), Arc::new(SystemClock))
-        .await?;
+    let app = AppService::open(
+        &ctx,
+        &root,
+        parse.clone(),
+        embedder.clone(),
+        Arc::new(SystemClock),
+    )
+    .await?;
     let app = match reranker.clone() {
         Some(r) => app.with_reranker(r),
         None => app,
@@ -250,7 +256,7 @@ async fn main() -> Result<(), StartupError> {
     ));
 
     // --- pipe bind (REQ-DAEMON-003/012, design D5) — readiness signal #2 --
-    let tid = ctx.tenant_id().clone();
+    let tid = *ctx.tenant_id();
     let name = pipe_name(&root, &tid);
     let pipe = DaemonPipe::bind(&name).await?;
     info!(%name, "daemon bound named pipe");
@@ -262,7 +268,9 @@ async fn main() -> Result<(), StartupError> {
     // check below logs a warning if the production invariant is violated.
     let detached = detach_from_inherited_job();
     if !detached {
-        warn!("R1 invariant violated: daemon is bound to an inherited Job Object; spawning must use CREATE_BREAKAWAY_FROM_JOB");
+        warn!(
+            "R1 invariant violated: daemon is bound to an inherited Job Object; spawning must use CREATE_BREAKAWAY_FROM_JOB"
+        );
     }
 
     // --- audit logger for auth failures (best-effort) --------------------
@@ -315,8 +323,7 @@ async fn main() -> Result<(), StartupError> {
                 pipe_mode::Bytes,
                 pipe_mode::Bytes,
             > = conn;
-            let result =
-                server_handshake_with_timeout(&mut conn, &auth, pipe_timeout).await;
+            let result = server_handshake_with_timeout(&mut conn, &auth, pipe_timeout).await;
             let welcome = match result {
                 Ok(w) => w,
                 Err(ref err) => {
@@ -324,7 +331,7 @@ async fn main() -> Result<(), StartupError> {
                     if let (Some(logger), HandshakeError::AuthFailed(reason)) =
                         (audit_logger.as_ref(), err)
                     {
-                        let _ = logger.error(
+                        logger.error(
                             &auth.ctx,
                             "daemon_handshake",
                             serde_json::json!({ "reason": reason }),

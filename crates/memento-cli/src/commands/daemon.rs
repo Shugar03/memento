@@ -131,12 +131,13 @@ async fn run_start(_matches: &ArgMatches) -> Result<(), DomainError> {
             return Err(startup_error_to_domain(&err));
         }
     };
-    let tenant_id: TenantId = config
-        .tenant_id
-        .parse()
-        .map_err(|err| DomainError::InvalidInput {
-            message: format!("invalid MEMENTO_TENANT: {err}"),
-        })?;
+    let tenant_id: TenantId =
+        config
+            .tenant_id
+            .parse()
+            .map_err(|err| DomainError::InvalidInput {
+                message: format!("invalid MEMENTO_TENANT: {err}"),
+            })?;
     let opts = SpawnerOptions {
         root: config.root.clone(),
         tenant_id,
@@ -219,9 +220,7 @@ fn startup_error_to_domain(err: &DaemonError) -> DomainError {
         DaemonError::Disabled | DaemonError::MissingEnv(_) => DomainError::InvalidInput {
             message: format!("{err}"),
         },
-        DaemonError::ConfigMismatch(_) | DaemonError::AuthFailed(_) => {
-            DomainError::AuthFailed
-        }
+        DaemonError::ConfigMismatch(_) | DaemonError::AuthFailed(_) => DomainError::AuthFailed,
         DaemonError::PipeNotFound(_)
         | DaemonError::Timeout(_)
         | DaemonError::Protocol(_)

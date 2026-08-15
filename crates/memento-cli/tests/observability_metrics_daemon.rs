@@ -24,7 +24,7 @@
 //! [`OBS_ENV_LOCK`] so concurrent nextest workers can't race the gate.
 
 use memento_domain::TenantId;
-use memento_mcp::daemon::{pipe_name, DaemonPipe};
+use memento_mcp::daemon::{DaemonPipe, pipe_name};
 use memento_mcp::frame;
 use memento_mcp::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
 use std::time::Duration;
@@ -101,6 +101,11 @@ async fn observability_metrics_no_daemon_falls_back_to_local_dump() {
 }
 
 #[tokio::test]
+// The env lock must stay held while the subprocess runs (it reads
+// process env via the daemon probe). Current-thread tokio runtime +
+// std Mutex cannot deadlock this task; the guard only serializes
+// cross-test env mutation.
+#[allow(clippy::await_holding_lock)]
 async fn observability_metrics_daemon_hello_welcome_handshake_works_on_real_pipe() {
     // The end-to-end daemon handshake over a real Windows named pipe
     // (REQ-DAEMON-002/005/006). This is the layer B6 unblocks for the
@@ -207,6 +212,8 @@ async fn observability_metrics_daemon_hello_welcome_handshake_works_on_real_pipe
 }
 
 #[tokio::test]
+// Same env-lock-across-await rationale as the handshake test above.
+#[allow(clippy::await_holding_lock)]
 async fn observability_metrics_with_no_daemon_env_takes_local_dump_path() {
     // REQ-DAEMON-004 + REQ-DAEMON-010: `MEMENTO_NO_DAEMON=1` short-
     // circuits the daemon path even when a daemon-shaped environment

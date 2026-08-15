@@ -25,9 +25,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use tracing::warn;
 
-use crate::transport::pipe_client::{
-    ClientConfig, DaemonClient, DaemonError, NO_DAEMON_ENV,
-};
+use crate::transport::pipe_client::{ClientConfig, DaemonClient, DaemonError, NO_DAEMON_ENV};
 
 /// The dump destination override (REQ-OBS-007): `MEMENTO_METRICS_FILE` when
 /// set, stdout otherwise.
@@ -66,7 +64,11 @@ async fn try_daemon_metrics() -> Result<Option<String>, DomainError> {
     let config = match ClientConfig::from_env() {
         Ok(c) => c,
         Err(err) => {
-            warn!(tier = "client_config", ?err, "observability metrics: falling back to local dump");
+            warn!(
+                tier = "client_config",
+                ?err,
+                "observability metrics: falling back to local dump"
+            );
             return Ok(None);
         }
     };
@@ -91,38 +93,42 @@ async fn try_daemon_metrics() -> Result<Option<String>, DomainError> {
         "kind": "sys",
         "command": SysCommand::Metrics,
     });
-    let request_bytes =
-        serde_json::to_vec(&request).map_err(|err| DomainError::Internal {
-            message: format!("serializing sys.metrics request: {err}"),
-        })?;
+    let request_bytes = serde_json::to_vec(&request).map_err(|err| DomainError::Internal {
+        message: format!("serializing sys.metrics request: {err}"),
+    })?;
     // Frame::write_message is provided by memento-mcp::frame.
     let timeout_d = config.pipe_timeout;
-    let write_result = tokio::time::timeout(timeout_d, frame::write_message(&mut client.conn, &request_bytes))
-        .await
-        .map_err(|_| DomainError::Internal {
-            message: format!(
-                "sys.metrics request write timed out after {timeout_d:?}"
-            ),
-        })?;
+    let write_result = tokio::time::timeout(
+        timeout_d,
+        frame::write_message(&mut client.conn, &request_bytes),
+    )
+    .await
+    .map_err(|_| DomainError::Internal {
+        message: format!("sys.metrics request write timed out after {timeout_d:?}"),
+    })?;
     if let Err(err) = write_result {
         warn!(?err, "observability metrics: write failed; local dump");
         return Ok(None);
     }
-    let response_bytes = match tokio::time::timeout(timeout_d, frame::read_message(&mut client.conn)).await {
-        Ok(Ok(b)) => b,
-        Ok(Err(err)) => {
-            warn!(?err, "observability metrics: read failed; local dump");
-            return Ok(None);
-        }
-        Err(_) => {
-            warn!("observability metrics: read timed out; local dump");
-            return Ok(None);
-        }
-    };
+    let response_bytes =
+        match tokio::time::timeout(timeout_d, frame::read_message(&mut client.conn)).await {
+            Ok(Ok(b)) => b,
+            Ok(Err(err)) => {
+                warn!(?err, "observability metrics: read failed; local dump");
+                return Ok(None);
+            }
+            Err(_) => {
+                warn!("observability metrics: read timed out; local dump");
+                return Ok(None);
+            }
+        };
     let response: Value = match serde_json::from_slice(&response_bytes) {
         Ok(v) => v,
         Err(err) => {
-            warn!(?err, "observability metrics: response is not valid JSON; local dump");
+            warn!(
+                ?err,
+                "observability metrics: response is not valid JSON; local dump"
+            );
             return Ok(None);
         }
     };
@@ -208,8 +214,7 @@ mod tests {
         // mirror that here: parse the root, then hand `sub` to `run`.
         let root = clap::Command::new("memento")
             .subcommand(
-                clap::Command::new("observability")
-                    .subcommand(clap::Command::new("metrics")),
+                clap::Command::new("observability").subcommand(clap::Command::new("metrics")),
             )
             .get_matches_from(["memento", "observability", "metrics"]);
         let (_name, sub) = root.subcommand().expect("observability subcommand");
@@ -261,8 +266,7 @@ mod tests {
         assert_eq!(parsed["kind"], "sys");
         assert_eq!(parsed["command"], "metrics");
         // The Command enum deserializes back into the same variant.
-        let round: DispatchCommand =
-            serde_json::from_value(parsed).expect("Command roundtrip");
+        let round: DispatchCommand = serde_json::from_value(parsed).expect("Command roundtrip");
         assert_eq!(round.path(), "sys.metrics");
     }
 
@@ -292,8 +296,7 @@ mod tests {
         });
         // Server side: read the request, reply with the dispatcher envelope.
         let raw = frame::read_message(&mut a).await.expect("read request");
-        let cmd: DispatchCommand =
-            serde_json::from_slice(&raw).expect("Command parses");
+        let cmd: DispatchCommand = serde_json::from_slice(&raw).expect("Command parses");
         assert_eq!(cmd, DispatchCommand::Sys(SysCommand::Metrics));
         let body = "# source=daemon pid=4242 tenant=test\n# HELP foo 1\nfoo 1\n";
         let response = json!({

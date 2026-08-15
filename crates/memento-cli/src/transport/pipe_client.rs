@@ -16,19 +16,17 @@
 
 use std::env;
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use interprocess::os::windows::named_pipe::{
-    pipe_mode,
-    tokio::PipeStream,
-};
+use interprocess::os::windows::named_pipe::{pipe_mode, tokio::PipeStream};
 use memento_mcp::{
-    daemon::{pipe_name, DEFAULT_PIPE_TIMEOUT},
+    daemon::{DEFAULT_PIPE_TIMEOUT, pipe_name},
     frame,
     handshake::{Hello, PROTOCOL_VERSION, Role, Welcome},
 };
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::time::timeout;
 
@@ -94,14 +92,13 @@ impl ClientConfig {
         if env::var(NO_DAEMON_ENV).ok().as_deref() == Some("1") {
             return Err(DaemonError::Disabled);
         }
-        let root = env::var("MEMENTO_ROOT")
-            .map_err(|_| DaemonError::MissingEnv("MEMENTO_ROOT"))?;
-        let token = env::var("MEMENTO_TOKEN")
-            .map_err(|_| DaemonError::MissingEnv("MEMENTO_TOKEN"))?;
+        let root = env::var("MEMENTO_ROOT").map_err(|_| DaemonError::MissingEnv("MEMENTO_ROOT"))?;
+        let token =
+            env::var("MEMENTO_TOKEN").map_err(|_| DaemonError::MissingEnv("MEMENTO_TOKEN"))?;
         let agent_id = env::var("MEMENTO_AGENT_ID")
             .map_err(|_| DaemonError::MissingEnv("MEMENTO_AGENT_ID"))?;
-        let tenant_id = env::var("MEMENTO_TENANT")
-            .map_err(|_| DaemonError::MissingEnv("MEMENTO_TENANT"))?;
+        let tenant_id =
+            env::var("MEMENTO_TENANT").map_err(|_| DaemonError::MissingEnv("MEMENTO_TENANT"))?;
         let no_embeddings = env::var("MEMENTO_NO_EMBEDDINGS")
             .map(|v| v == "1")
             .unwrap_or(false);
@@ -136,20 +133,22 @@ impl ClientConfig {
     /// discovery step (cookie discovery via `pid_alive`). For now, we
     /// probe for the file at any pid by scanning the directory.
     pub fn cookie_path(&self) -> Result<PathBuf, DaemonError> {
-        let entries = std::fs::read_dir(&self.root)
-            .map_err(|err| DaemonError::CookieMissing(self.root.join(format!(".daemon-?.cookie ({err}"))))?;
+        let entries = std::fs::read_dir(&self.root).map_err(|err| {
+            DaemonError::CookieMissing(self.root.join(format!(".daemon-?.cookie ({err}")))
+        })?;
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if let Some(rest) = name.strip_prefix(".daemon-") {
-                if let Some(stripped) = rest.strip_suffix(".cookie") {
-                    if stripped.chars().all(|c| c.is_ascii_digit()) {
-                        return Ok(entry.path());
-                    }
-                }
+            if let Some(rest) = name.strip_prefix(".daemon-")
+                && let Some(stripped) = rest.strip_suffix(".cookie")
+                && stripped.chars().all(|c| c.is_ascii_digit())
+            {
+                return Ok(entry.path());
             }
         }
-        Err(DaemonError::CookieMissing(self.root.join(".daemon-<pid>.cookie")))
+        Err(DaemonError::CookieMissing(
+            self.root.join(".daemon-<pid>.cookie"),
+        ))
     }
 
     /// Build the HELLO payload the client sends on every connection.
@@ -172,7 +171,10 @@ impl ClientConfig {
     /// upstream; here we just hand the raw bytes up to the daemon.
     fn read_cookie(&self) -> String {
         match self.cookie_path() {
-            Ok(path) => std::fs::read_to_string(&path).unwrap_or_default().trim().to_string(),
+            Ok(path) => std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
             Err(_) => String::new(),
         }
     }
@@ -269,7 +271,10 @@ impl DaemonClient {
         {
             return Err(DaemonError::ConfigMismatch(format!(
                 "locale={:?} (cli) vs {:?} (daemon); no_embeddings={} (cli) vs {} (daemon)",
-                config.locale, welcome.spawn.locale, config.no_embeddings, welcome.spawn.no_embeddings
+                config.locale,
+                welcome.spawn.locale,
+                config.no_embeddings,
+                welcome.spawn.no_embeddings
             )));
         }
         Ok(welcome)
@@ -293,10 +298,13 @@ impl DaemonClient {
     ) -> Result<serde_json::Value, DaemonError> {
         let bytes = serde_json::to_vec(&cmd)
             .map_err(|err| DaemonError::Protocol(format!("command serialize: {err}")))?;
-        timeout(self.pipe_timeout, frame::write_message(&mut self.conn, &bytes))
-            .await
-            .map_err(|_| DaemonError::Timeout(self.pipe_timeout))?
-            .map_err(DaemonError::Io)?;
+        timeout(
+            self.pipe_timeout,
+            frame::write_message(&mut self.conn, &bytes),
+        )
+        .await
+        .map_err(|_| DaemonError::Timeout(self.pipe_timeout))?
+        .map_err(DaemonError::Io)?;
         let payload = timeout(self.pipe_timeout, frame::read_message(&mut self.conn))
             .await
             .map_err(|_| DaemonError::Timeout(self.pipe_timeout))?
@@ -396,8 +404,7 @@ mod tests {
         let config_server = config.clone();
         let server = tokio::spawn(async move {
             let raw = frame::read_message(&mut a).await.expect("read HELLO");
-            let hello: Hello =
-                serde_json::from_slice(&raw).expect("HELLO json");
+            let hello: Hello = serde_json::from_slice(&raw).expect("HELLO json");
             assert_eq!(hello.proto, PROTOCOL_VERSION);
             assert_eq!(hello.role, Role::Cli);
             assert_eq!(hello.cookie, cookie);
@@ -413,7 +420,9 @@ mod tests {
                 },
             };
             let payload = serde_json::to_vec(&welcome).expect("WELCOME json");
-            frame::write_message(&mut a, &payload).await.expect("write WELCOME");
+            frame::write_message(&mut a, &payload)
+                .await
+                .expect("write WELCOME");
         });
 
         // Client-side: send HELLO, read WELCOME.
@@ -421,14 +430,16 @@ mod tests {
         // directly) and validates only the framed-handshake shape.
         let hello = config.hello(0);
         let payload = serde_json::to_vec(&hello).expect("HELLO json");
-        frame::write_message(&mut b, &payload).await.expect("write HELLO");
+        frame::write_message(&mut b, &payload)
+            .await
+            .expect("write HELLO");
         let raw = frame::read_message(&mut b).await.expect("read WELCOME");
         let welcome: Welcome = serde_json::from_slice(&raw).expect("WELCOME json");
         assert_eq!(welcome.daemon_pid, 99);
         assert!(welcome.has_embedding());
         assert!(welcome.has_quiesce());
         assert_eq!(welcome.spawn.locale, config.locale);
-        assert_eq!(welcome.spawn.no_embeddings, false);
+        assert!(!welcome.spawn.no_embeddings);
 
         // The server task consumed its end of the duplex; just await it.
         server.await.expect("server task");
@@ -439,9 +450,16 @@ mod tests {
     #[test]
     fn no_daemon_env_disables_transport() {
         // Clear other env vars that `from_env` would otherwise read.
-        for k in ["MEMENTO_NO_DAEMON", "MEMENTO_ROOT", "MEMENTO_TOKEN",
-                  "MEMENTO_AGENT_ID", "MEMENTO_TENANT", "MEMENTO_NO_EMBEDDINGS",
-                  "MEMENTO_LOCALE", "MEMENTO_DAEMON_PIPE_TIMEOUT"] {
+        for k in [
+            "MEMENTO_NO_DAEMON",
+            "MEMENTO_ROOT",
+            "MEMENTO_TOKEN",
+            "MEMENTO_AGENT_ID",
+            "MEMENTO_TENANT",
+            "MEMENTO_NO_EMBEDDINGS",
+            "MEMENTO_LOCALE",
+            "MEMENTO_DAEMON_PIPE_TIMEOUT",
+        ] {
             // SAFETY: tests run sequentially in nextest --test-threads=1 for
             // credential tests; the filter above already isolates this test.
             unsafe { std::env::remove_var(k) };
@@ -457,8 +475,13 @@ mod tests {
     /// B4 catches it and falls back to the in-process AppService).
     #[test]
     fn missing_root_surfaces_as_missing_env() {
-        for k in ["MEMENTO_NO_DAEMON", "MEMENTO_ROOT", "MEMENTO_TOKEN",
-                  "MEMENTO_AGENT_ID", "MEMENTO_TENANT"] {
+        for k in [
+            "MEMENTO_NO_DAEMON",
+            "MEMENTO_ROOT",
+            "MEMENTO_TOKEN",
+            "MEMENTO_AGENT_ID",
+            "MEMENTO_TENANT",
+        ] {
             // SAFETY: tests are serialized (nextest default test-threads=2;
             // this test mutates process env which is shared; we accept the
             // risk for the duration of the test and restore in the end).
@@ -495,10 +518,7 @@ mod tests {
         };
         let path = config.cookie_path().expect("cookie found");
         let path_str = path.to_string_lossy();
-        assert!(
-            path_str.ends_with(".cookie"),
-            "cookie path: {path_str}"
-        );
+        assert!(path_str.ends_with(".cookie"), "cookie path: {path_str}");
         // Windows returns extended-length paths (\\?\C:\...); strip the
         // prefix when asserting against the canonical filename so the test is
         // cross-platform.
@@ -565,4 +585,3 @@ mod tests {
         assert_eq!(hello.staging, env::temp_dir());
     }
 }
-

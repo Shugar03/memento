@@ -26,18 +26,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use interprocess::os::windows::named_pipe::tokio::PipeStream;
+use crate::StubEmbedPort;
 use interprocess::os::windows::named_pipe::pipe_mode;
+use interprocess::os::windows::named_pipe::tokio::PipeStream;
 use memento_application::{AppService, SystemClock};
 use memento_domain::{DomainError, TenantContext, TenantId};
-use memento_mcp::daemon::{pipe_name, server_handshake_with_timeout, DaemonAuth, DaemonPipe};
-use memento_mcp::dispatcher::{dispatch_command_with_state, Command, DaemonState};
+use memento_mcp::daemon::{DaemonAuth, DaemonPipe, pipe_name, server_handshake_with_timeout};
+use memento_mcp::dispatcher::{Command, DaemonState, dispatch_command_with_state};
 use memento_mcp::frame;
-use memento_mcp::handshake::{Hello, Welcome, PROTOCOL_VERSION, Role};
+use memento_mcp::handshake::{Hello, PROTOCOL_VERSION, Role, Welcome};
 use memento_parse::ParseService;
 use memento_parse::anydoc::{AnydocCommand, AnydocConfig};
 use memento_ports::{EmbedPort, ParsePort};
-use crate::StubEmbedPort;
 use rand_core::{OsRng, RngCore};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
@@ -71,7 +71,8 @@ impl DaemonFixtureOptions {
 
     /// The cookie path the daemon writes at startup.
     pub fn cookie_path(&self) -> PathBuf {
-        self.root.join(format!(".daemon-{}.cookie", std::process::id()))
+        self.root
+            .join(format!(".daemon-{}.cookie", std::process::id()))
     }
 }
 
@@ -218,10 +219,7 @@ impl DaemonFixture {
     /// (bypasses the wire). Mirrors what a wire roundtrip would yield —
     /// used by quiesce/resume tests that want the dispatcher's source of
     /// truth without a connection roundtrip.
-    pub async fn dispatch(
-        &self,
-        cmd: Command,
-    ) -> Result<serde_json::Value, DomainError> {
+    pub async fn dispatch(&self, cmd: Command) -> Result<serde_json::Value, DomainError> {
         dispatch_command_with_state(&self.state, cmd).await
     }
 }
@@ -257,10 +255,7 @@ impl DaemonFixtureClient {
     /// Dispatch one framed [`Command`] and read the response JSON.
     /// Convenience wrapper over [`frame::write_message`] +
     /// [`frame::read_message`] + serde_json.
-    pub async fn dispatch(
-        &mut self,
-        cmd: Command,
-    ) -> Result<serde_json::Value, String> {
+    pub async fn dispatch(&mut self, cmd: Command) -> Result<serde_json::Value, String> {
         let bytes = serde_json::to_vec(&cmd).expect("command serializes");
         frame::write_message(&mut self.conn, &bytes)
             .await
@@ -366,14 +361,13 @@ where
     let payload = serde_json::to_vec(&value).expect("dispatcher response serializes");
     tokio::time::timeout(timeout, frame::write_message(conn, &payload))
         .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "response write timeout"))??;
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "response write timeout")
+        })??;
     Ok(())
 }
 
-async fn connect_handshake(
-    opts: &DaemonFixtureOptions,
-    cookie_path: &Path,
-) -> DaemonFixtureClient {
+async fn connect_handshake(opts: &DaemonFixtureOptions, cookie_path: &Path) -> DaemonFixtureClient {
     let name = opts.pipe_name();
     let mut conn: PipeStream<pipe_mode::Bytes, pipe_mode::Bytes> = tokio::time::timeout(
         opts.pipe_timeout,

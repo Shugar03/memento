@@ -70,11 +70,7 @@ impl PipeClientFixture {
 
     /// Convenience: `connect` with the test's `tempfile::TempDir` + the
     /// canonical `TenantContext::new_for_tests` tenant identity.
-    pub async fn for_tempstore(
-        root: &Path,
-        ctx: TenantContext,
-        no_embeddings: bool,
-    ) -> Self {
+    pub async fn for_tempstore(root: &Path, ctx: TenantContext, no_embeddings: bool) -> Self {
         let tenant_id = *ctx.tenant_id();
         Self::connect(
             root.to_path_buf(),

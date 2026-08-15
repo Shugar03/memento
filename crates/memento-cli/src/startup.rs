@@ -168,7 +168,11 @@ pub async fn open(root: &Path, no_embeddings: bool) -> Result<CliApp, DomainErro
 /// * Everything else → `DomainError::Internal` (connect broken, …).
 pub async fn try_open(root: &Path, no_embeddings: bool) -> Result<CliBackend, DomainError> {
     // Gate 1: explicit disable → Local (REQ-DAEMON-004).
-    if std::env::var(crate::transport::pipe_client::NO_DAEMON_ENV).ok().as_deref() == Some("1") {
+    if std::env::var(crate::transport::pipe_client::NO_DAEMON_ENV)
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
         return open(root, no_embeddings).await.map(CliBackend::Local);
     }
 
@@ -211,12 +215,13 @@ async fn spawn_and_retry(
     config: &ClientConfig,
     no_embeddings: bool,
 ) -> Result<CliBackend, DomainError> {
-    let tenant_id: TenantId = config
-        .tenant_id
-        .parse()
-        .map_err(|err| DomainError::InvalidInput {
-            message: format!("invalid MEMENTO_TENANT: {err}"),
-        })?;
+    let tenant_id: TenantId =
+        config
+            .tenant_id
+            .parse()
+            .map_err(|err| DomainError::InvalidInput {
+                message: format!("invalid MEMENTO_TENANT: {err}"),
+            })?;
     let opts = SpawnerOptions {
         root: root.to_path_buf(),
         tenant_id,
@@ -257,11 +262,11 @@ fn daemon_err_to_domain(err: &DaemonError) -> DomainError {
             message: format!("{err}"),
         },
         DaemonError::ConfigMismatch(_) | DaemonError::AuthFailed(_) => DomainError::AuthFailed,
-        DaemonError::Timeout(_)
-        | DaemonError::Protocol(_)
-        | DaemonError::Io(_) => DomainError::Internal {
-            message: format!("{err}"),
-        },
+        DaemonError::Timeout(_) | DaemonError::Protocol(_) | DaemonError::Io(_) => {
+            DomainError::Internal {
+                message: format!("{err}"),
+            }
+        }
     }
 }
 

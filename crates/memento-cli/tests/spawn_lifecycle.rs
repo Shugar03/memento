@@ -103,8 +103,6 @@ async fn spawner_picks_newest_cookie_among_many() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     // Then a fresh one.
     let _ = mock_daemon_ready_signal(dir.path(), 200).await;
-    let status = DaemonSpawner::status(dir.path())
-        .await
-        .expect("status");
+    let status = DaemonSpawner::status(dir.path()).await.expect("status");
     assert_eq!(status.pid, 200, "newest cookie wins");
 }

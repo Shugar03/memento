@@ -31,10 +31,7 @@ fn fixture() -> (tempfile::TempDir, memento_testkit::TempStore) {
     (dir, store)
 }
 
-fn options(
-    store: &memento_testkit::TempStore,
-    dir: &tempfile::TempDir,
-) -> DaemonFixtureOptions {
+fn options(store: &memento_testkit::TempStore, dir: &tempfile::TempDir) -> DaemonFixtureOptions {
     DaemonFixtureOptions {
         root: dir.path().to_path_buf(),
         ctx: store.ctx(),
@@ -45,10 +42,7 @@ fn options(
     }
 }
 
-async fn connect(
-    fixture: &DaemonFixture,
-    token: &str,
-) -> DaemonClient {
+async fn connect(fixture: &DaemonFixture, token: &str) -> DaemonClient {
     let tenant_id_str = fixture.tenant_id().to_string();
     let config = ClientConfig {
         root: fixture.root().to_path_buf(),
@@ -82,10 +76,7 @@ async fn two_concurrent_clients_both_get_consistent_metrics() {
     // because the dispatcher never returns one for `sys.*`.
     let resp_a = DispatchCommand::Sys(SysCommand::Metrics);
     let resp_b = DispatchCommand::Sys(SysCommand::Metrics);
-    let (va, vb) = tokio::join!(
-        a.dispatch(resp_a),
-        b.dispatch(resp_b),
-    );
+    let (va, vb) = tokio::join!(a.dispatch(resp_a), b.dispatch(resp_b),);
     let va = va.expect("client A metrics");
     let vb = vb.expect("client B metrics");
 

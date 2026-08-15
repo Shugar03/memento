@@ -36,7 +36,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use memento_application::{AppService, Clock, SystemClock};
+#[cfg(test)]
+use memento_application::SystemClock;
+use memento_application::{AppService, Clock};
 use memento_domain::{DomainError, TenantContext};
 use memento_ports::{EmbedPort, ParsePort, RerankPort};
 use serde::{Deserialize, Serialize};
@@ -409,11 +411,11 @@ async fn sys_resume(state: &DaemonState) -> Result<Value, DomainError> {
 fn sys_metrics(state: &DaemonState) -> Value {
     let body = memento_observability::metrics::render();
     let pid = std::process::id();
-    let stamped = format!("# source=daemon pid={pid} tenant={}\n{body}", state.ctx.tenant_id());
-    tracing::info!(
-        bytes = body.len(),
-        "sys.metrics"
+    let stamped = format!(
+        "# source=daemon pid={pid} tenant={}\n{body}",
+        state.ctx.tenant_id()
     );
+    tracing::info!(bytes = body.len(), "sys.metrics");
     json!({
         "status": "ok",
         "format": "prometheus_text",
@@ -853,8 +855,7 @@ mod tests {
                 stdout_limit: 1024,
                 staging_dir: std::env::temp_dir(),
             }));
-            let embedder: Option<Arc<dyn EmbedPort>> =
-                Some(Arc::new(StubEmbedPort::default()));
+            let embedder: Option<Arc<dyn EmbedPort>> = Some(Arc::new(StubEmbedPort::default()));
             let app = AppService::open(
                 &ts.ctx(),
                 ts.root(),
@@ -883,23 +884,16 @@ mod tests {
             let (_ts, state) = state_with_open_app().await;
             assert!(state.app_is_open(), "baseline: app is open");
 
-            let value = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Quiesce),
-            )
-            .await
-            .expect("quiesce ok");
+            let value = dispatch_command_with_state(&state, Command::Sys(SysCommand::Quiesce))
+                .await
+                .expect("quiesce ok");
             assert_eq!(value["status"], "ok");
             assert_eq!(value["phase"], "quiesced");
             assert!(
-                value["ts"].as_str().is_some_and(str::is_empty) == false
-                    && value["ts"].is_string(),
+                !value["ts"].as_str().is_some_and(str::is_empty) && value["ts"].is_string(),
                 "ts stamped: {value}"
             );
-            assert!(
-                !state.app_is_open(),
-                "AppService dropped from state.app"
-            );
+            assert!(!state.app_is_open(), "AppService dropped from state.app");
         }
 
         #[tokio::test]
@@ -908,19 +902,13 @@ mod tests {
             // `already_quiesced` without panicking (the Mutex<Option<_>> guard
             // is empty on entry — no swap happens).
             let (_ts, state) = state_with_open_app().await;
-            let _ = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Quiesce),
-            )
-            .await
-            .expect("first quiesce");
+            let _ = dispatch_command_with_state(&state, Command::Sys(SysCommand::Quiesce))
+                .await
+                .expect("first quiesce");
 
-            let value = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Quiesce),
-            )
-            .await
-            .expect("second quiesce");
+            let value = dispatch_command_with_state(&state, Command::Sys(SysCommand::Quiesce))
+                .await
+                .expect("second quiesce");
             assert_eq!(value["status"], "ok");
             assert_eq!(value["phase"], "already_quiesced");
         }
@@ -931,19 +919,13 @@ mod tests {
             // preserved adapter Arcs (parse, embedder, clock). The embedder
             // Arc stays the same — that's the R2 contract.
             let (ts, state) = state_with_open_app().await;
-            let _ = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Quiesce),
-            )
-            .await
-            .expect("quiesce");
+            let _ = dispatch_command_with_state(&state, Command::Sys(SysCommand::Quiesce))
+                .await
+                .expect("quiesce");
 
-            let value = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Resume),
-            )
-            .await
-            .expect("resume");
+            let value = dispatch_command_with_state(&state, Command::Sys(SysCommand::Resume))
+                .await
+                .expect("resume");
             assert_eq!(value["status"], "ok");
             assert_eq!(value["phase"], "resumed");
             assert!(state.app_is_open(), "AppService rebuilt");
@@ -965,12 +947,9 @@ mod tests {
             // `already_open` without re-opening (avoids duplicate schema
             // work and double pre-warm).
             let (_ts, state) = state_with_open_app().await;
-            let value = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Resume),
-            )
-            .await
-            .expect("resume against open state");
+            let value = dispatch_command_with_state(&state, Command::Sys(SysCommand::Resume))
+                .await
+                .expect("resume against open state");
             assert_eq!(value["status"], "ok");
             assert_eq!(value["phase"], "already_open");
             assert!(state.app_is_open());
@@ -996,20 +975,14 @@ mod tests {
             }
 
             let (_ts, state) = state_with_open_app().await;
-            let value = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Metrics),
-            )
-            .await
-            .expect("metrics");
+            let value = dispatch_command_with_state(&state, Command::Sys(SysCommand::Metrics))
+                .await
+                .expect("metrics");
             assert_eq!(value["status"], "ok");
             assert_eq!(value["format"], "prometheus_text");
             let body = value["body"].as_str().expect("body string");
             let pid_line = format!("# source=daemon pid={}", std::process::id());
-            assert!(
-                body.starts_with(&pid_line),
-                "stamp: {body}"
-            );
+            assert!(body.starts_with(&pid_line), "stamp: {body}");
             assert!(
                 body.contains(&format!("tenant={}", state.ctx.tenant_id())),
                 "tenant stamp: {body}"
@@ -1025,12 +998,9 @@ mod tests {
             let (_ts, state) = state_with_open_app().await;
             assert!(!state.shutdown_requested(), "baseline: flag clear");
 
-            let value = dispatch_command_with_state(
-                &state,
-                Command::Sys(SysCommand::Shutdown),
-            )
-            .await
-            .expect("shutdown");
+            let value = dispatch_command_with_state(&state, Command::Sys(SysCommand::Shutdown))
+                .await
+                .expect("shutdown");
             assert_eq!(value["status"], "ok");
             assert_eq!(value["phase"], "shutting_down");
             assert!(state.shutdown_requested(), "flag raised");
@@ -1068,16 +1038,10 @@ mod tests {
                 SysCommand::Metrics,
                 SysCommand::Shutdown,
             ] {
-                let value = dispatch_command_with_state(
-                    &state,
-                    Command::Sys(sys),
-                )
-                .await
-                .expect("sys dispatch ok");
-                assert_eq!(
-                    value["status"], "ok",
-                    "sys.{:?} status: {value}", sys
-                );
+                let value = dispatch_command_with_state(&state, Command::Sys(sys))
+                    .await
+                    .expect("sys dispatch ok");
+                assert_eq!(value["status"], "ok", "sys.{:?} status: {value}", sys);
             }
             // The shutdown flag survived the four sys calls.
             assert!(state.shutdown_requested(), "shutdown sticky");

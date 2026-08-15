@@ -104,8 +104,8 @@ impl SpawnError {
     }
 }
 
-/// Inputs for [`DaemonSpawner::start`]: the daemon's bound (root, tenant)
-/// + the spawn-fixed config (`--no-embeddings`, locale). The spawner
+/// Inputs for [`DaemonSpawner::start`]: the daemon's bound `(root, tenant)`
+/// plus the spawn-fixed config (`--no-embeddings`, locale). The spawner
 /// reads `MEMENTO_TOKEN` itself from the process env — the spawner
 /// inherits the spawner's env (D8 — the daemon resolves its own
 /// credentials at startup).
@@ -181,7 +181,10 @@ impl DaemonSpawner {
         #[cfg(not(windows))]
         let mut cmd = Command::new(&program);
         cmd.env("MEMENTO_ROOT", &opts.root)
-            .env("MEMENTO_NO_EMBEDDINGS", if opts.no_embeddings { "1" } else { "0" })
+            .env(
+                "MEMENTO_NO_EMBEDDINGS",
+                if opts.no_embeddings { "1" } else { "0" },
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -272,18 +275,18 @@ fn try_probe_existing(root: &Path) -> Option<ChildHandle> {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if let Some(rest) = name.strip_prefix(".daemon-") {
-            if let Some(pid_str) = rest.strip_suffix(".cookie") {
-                if let Ok(pid) = pid_str.parse::<u32>() {
-                    let mtime = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .unwrap_or(UNIX_EPOCH);
-                    if newest.map_or(true, |(t, _)| mtime > t) {
-                        newest = Some((mtime, pid));
-                    }
-                }
+        if let Some(pid_str) = name
+            .strip_prefix(".daemon-")
+            .and_then(|rest| rest.strip_suffix(".cookie"))
+            && let Ok(pid) = pid_str.parse::<u32>()
+        {
+            let mtime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(UNIX_EPOCH);
+            if newest.is_none_or(|(t, _)| mtime > t) {
+                newest = Some((mtime, pid));
             }
         }
     }
@@ -295,16 +298,16 @@ fn try_probe_existing(root: &Path) -> Option<ChildHandle> {
 /// Locate `memento-daemon`: first try next to the current `memento`
 /// binary (cargo bins install side-by-side), then walk `PATH`.
 fn locate_daemon_binary() -> Result<PathBuf, SpawnError> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("memento-daemon.exe");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-            let candidate = dir.join("memento-daemon");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("memento-daemon.exe");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        let candidate = dir.join("memento-daemon");
+        if candidate.exists() {
+            return Ok(candidate);
         }
     }
     if let Ok(paths) = std::env::var("PATH") {
@@ -322,10 +325,7 @@ fn locate_daemon_binary() -> Result<PathBuf, SpawnError> {
 
 /// Poll for the cookie file (RQ-DAEMON-003 readiness signal). Returns the
 /// cookie mtime as the `started_at` estimate.
-async fn wait_for_readiness(
-    root: &Path,
-    timeout: Duration,
-) -> Result<DateTime<Utc>, SpawnError> {
+async fn wait_for_readiness(root: &Path, timeout: Duration) -> Result<DateTime<Utc>, SpawnError> {
     let started = std::time::Instant::now();
     loop {
         if let Some(handle) = try_probe_existing(root) {
@@ -355,7 +355,9 @@ impl SpawnLockGuard {
             .create_new(true)
             .open(path)
         {
-            Ok(_) => Ok(Self { path: path.to_path_buf() }),
+            Ok(_) => Ok(Self {
+                path: path.to_path_buf(),
+            }),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 Err(SpawnError::LockBusy(path.to_path_buf()))
             }
@@ -381,21 +383,24 @@ impl Drop for SpawnLockGuard {
 async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnError> {
     use interprocess::os::windows::named_pipe::tokio::PipeStream;
     use memento_mcp::daemon::DEFAULT_PIPE_TIMEOUT;
-    use memento_mcp::handshake::{Hello, Role, Welcome, PROTOCOL_VERSION};
+    use memento_mcp::handshake::{Hello, PROTOCOL_VERSION, Role, Welcome};
     use tokio::io::AsyncReadExt;
 
     // Resolve the pipe name from the canonical root + cookie-discovered
     // tenant id. For simplicity the SHUTDOWN sender reads the cookie
     // tenant id from env (the operator runs `memento daemon stop` in the
     // same shell that holds `MEMENTO_TENANT`).
-    let tenant_str = std::env::var("MEMENTO_TENANT").map_err(|_| SpawnError::MissingEnv("MEMENTO_TENANT"))?;
+    let tenant_str =
+        std::env::var("MEMENTO_TENANT").map_err(|_| SpawnError::MissingEnv("MEMENTO_TENANT"))?;
     let tenant_id: TenantId = tenant_str
         .parse()
         .map_err(|err| SpawnError::Connect(format!("invalid MEMENTO_TENANT: {err}")))?;
     let name = pipe_name(root, &tenant_id);
 
-    let token = std::env::var("MEMENTO_TOKEN").map_err(|_| SpawnError::MissingEnv("MEMENTO_TOKEN"))?;
-    let _agent_id = std::env::var("MEMENTO_AGENT_ID").map_err(|_| SpawnError::MissingEnv("MEMENTO_AGENT_ID"))?;
+    let token =
+        std::env::var("MEMENTO_TOKEN").map_err(|_| SpawnError::MissingEnv("MEMENTO_TOKEN"))?;
+    let _agent_id = std::env::var("MEMENTO_AGENT_ID")
+        .map_err(|_| SpawnError::MissingEnv("MEMENTO_AGENT_ID"))?;
     let locale = std::env::var("MEMENTO_LOCALE").ok();
     let no_embeddings = std::env::var("MEMENTO_NO_EMBEDDINGS").ok().as_deref() == Some("1");
 
@@ -406,13 +411,16 @@ async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnErro
         let n = entry.file_name();
         let n = n.to_string_lossy();
         if n.starts_with(".daemon-") && n.ends_with(".cookie") {
-            cookie = std::fs::read_to_string(entry.path()).ok().map(|s| s.trim().to_string());
+            cookie = std::fs::read_to_string(entry.path())
+                .ok()
+                .map(|s| s.trim().to_string());
             if cookie.is_some() {
                 break;
             }
         }
     }
-    let cookie = cookie.ok_or_else(|| SpawnError::Connect("no cookie file for stop".to_string()))?;
+    let cookie =
+        cookie.ok_or_else(|| SpawnError::Connect("no cookie file for stop".to_string()))?;
 
     let mut stream = tokio::time::timeout(
         DEFAULT_PIPE_TIMEOUT,
@@ -435,7 +443,8 @@ async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnErro
         no_embeddings,
         staging: std::env::temp_dir(),
     };
-    let hello_bytes = serde_json::to_vec(&hello).map_err(|err| SpawnError::Connect(format!("hello serialize: {err}")))?;
+    let hello_bytes = serde_json::to_vec(&hello)
+        .map_err(|err| SpawnError::Connect(format!("hello serialize: {err}")))?;
     frame::write_message(&mut stream, &hello_bytes)
         .await
         .map_err(|err| SpawnError::Connect(format!("hello write: {err}")))?;
@@ -449,7 +458,8 @@ async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnErro
 
     // `sys.shutdown`
     let cmd = DispatchCommand::Sys(SysCommand::Shutdown);
-    let req_bytes = serde_json::to_vec(&cmd).map_err(|err| SpawnError::Connect(format!("request serialize: {err}")))?;
+    let req_bytes = serde_json::to_vec(&cmd)
+        .map_err(|err| SpawnError::Connect(format!("request serialize: {err}")))?;
     frame::write_message(&mut stream, &req_bytes)
         .await
         .map_err(|err| SpawnError::Connect(format!("request write: {err}")))?;

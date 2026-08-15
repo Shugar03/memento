@@ -36,10 +36,10 @@
 
 use memento_cli::startup;
 use memento_domain::{DomainError, TenantId};
-use memento_mcp::daemon::{pipe_name, DaemonPipe};
+use memento_mcp::daemon::{DaemonPipe, pipe_name};
 use memento_mcp::frame;
-use memento_mcp::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
 use memento_mcp::handshake::Role;
+use memento_mcp::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
 use serde_json::Value;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -153,6 +153,11 @@ async fn run_mini_daemon(
 }
 
 #[tokio::test]
+// The env lock must stay held while `try_open` (which reads process env)
+// awaits the pipe roundtrip. Current-thread tokio runtime + std Mutex
+// cannot deadlock this task; the guard only serializes cross-test env
+// mutation (see module docs "Concurrency").
+#[allow(clippy::await_holding_lock)]
 async fn startup_refuses_locale_mismatch_with_invalid_input() {
     // REQ-DAEMON-003 + R3: client (MEMENTO_LOCALE=es) connects to a
     // daemon whose spawn config was fixed at `--locale=en`. The CLI
@@ -201,10 +206,16 @@ async fn startup_refuses_locale_mismatch_with_invalid_input() {
     // Production exit code (REQ-CL-005): DomainError::InvalidInput
     // maps to exit 2. The docs table lists exit 5 — that's a
     // long-standing docs/code drift tracked in B6's risks.
-    assert_eq!(err.exit_code(), 2, "InvalidInput exit code is 2 (code wins over docs)");
+    assert_eq!(
+        err.exit_code(),
+        2,
+        "InvalidInput exit code is 2 (code wins over docs)"
+    );
 }
 
 #[tokio::test]
+// Same env-lock-across-await rationale as `startup_refuses_locale_mismatch_*`.
+#[allow(clippy::await_holding_lock)]
 async fn startup_accepts_matching_locale_and_returns_remote_backend() {
     // Sanity / regression: a matching locale (client + daemon both
     // report "es") produces `CliBackend::Remote` — the wire path
@@ -250,10 +261,8 @@ fn config_mismatch_maps_to_invalid_input_with_bilingual_message() {
     let err = DomainError::InvalidInput {
         message: "daemon config mismatch: locale=es vs en; no_embeddings=false vs false".into(),
     };
-    let json_es =
-        memento_i18n::error_render::format_error_json(&err, memento_i18n::Locale::Es);
-    let json_en =
-        memento_i18n::error_render::format_error_json(&err, memento_i18n::Locale::En);
+    let json_es = memento_i18n::error_render::format_error_json(&err, memento_i18n::Locale::Es);
+    let json_en = memento_i18n::error_render::format_error_json(&err, memento_i18n::Locale::En);
     assert_eq!(json_es["code"], "INVALID_INPUT");
     assert_eq!(json_en["code"], "INVALID_INPUT");
     // ES: top-level message + detail tag carrying the config_mismatch
