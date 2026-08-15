@@ -30,6 +30,7 @@ fn error_key(err: &DomainError) -> StringKey {
         DomainError::SubprocessTimeout { .. } => StringKey::ErrSubprocessTimeout,
         DomainError::SubprocessStdoutOverflow { .. } => StringKey::ErrSubprocessStdoutOverflow,
         DomainError::SubprocessArgvInvalid { .. } => StringKey::ErrSubprocessArgvInvalid,
+        DomainError::DaemonUnavailable { .. } => StringKey::ErrDaemonUnavailable,
     }
 }
 

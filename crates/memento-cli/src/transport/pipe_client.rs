@@ -71,6 +71,11 @@ pub enum DaemonError {
     /// `(root, tenant)` yet, or the file was wiped).
     #[error("cookie file unreadable: {0}")]
     CookieMissing(PathBuf),
+    /// The pipe broke mid-request — the daemon died or was killed while
+    /// the roundtrip was in flight (REQ-DAEMON-013). The caller MAY
+    /// respawn the daemon and retry the request.
+    #[error("daemon pipe broken: {0}")]
+    PipeBroken(String),
 }
 
 /// Runtime configuration resolved from env (mirrors the daemon's gate).
@@ -249,7 +254,7 @@ impl DaemonClient {
         timeout(config.pipe_timeout, frame::write_message(stream, &payload))
             .await
             .map_err(|_| DaemonError::Timeout(config.pipe_timeout))?
-            .map_err(DaemonError::Io)?;
+            .map_err(broken_or_io)?;
         Ok(())
     }
 
@@ -261,7 +266,7 @@ impl DaemonClient {
         let payload = timeout(config.pipe_timeout, frame::read_message(stream))
             .await
             .map_err(|_| DaemonError::Timeout(config.pipe_timeout))?
-            .map_err(DaemonError::Io)?;
+            .map_err(broken_or_io)?;
         let welcome: Welcome = serde_json::from_slice(&payload)
             .map_err(|err| DaemonError::Protocol(format!("WELCOME is not valid JSON: {err}")))?;
         // REQ-DAEMON-003: CONFIG_MISMATCH axis. Refuse if the daemon was
@@ -304,11 +309,11 @@ impl DaemonClient {
         )
         .await
         .map_err(|_| DaemonError::Timeout(self.pipe_timeout))?
-        .map_err(DaemonError::Io)?;
+        .map_err(broken_or_io)?;
         let payload = timeout(self.pipe_timeout, frame::read_message(&mut self.conn))
             .await
             .map_err(|_| DaemonError::Timeout(self.pipe_timeout))?
-            .map_err(DaemonError::Io)?;
+            .map_err(broken_or_io)?;
         serde_json::from_slice(&payload)
             .map_err(|err| DaemonError::Protocol(format!("response parse: {err}")))
     }
@@ -338,6 +343,30 @@ impl DaemonClient {
             welcome,
             pipe_timeout,
         }
+    }
+}
+
+/// Whether an I/O error means the peer is gone (REQ-DAEMON-013
+/// mid-request death detection). Windows named pipes surface the daemon's
+/// death as `BrokenPipe` / `ConnectionReset` / `ConnectionAborted` /
+/// `NotConnected`.
+pub fn is_broken_pipe(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+    )
+}
+
+/// Classify a pipe I/O error: a dead peer becomes [`DaemonError::PipeBroken`]
+/// (retryable under REQ-DAEMON-013); anything else stays a plain IO error.
+fn broken_or_io(err: io::Error) -> DaemonError {
+    if is_broken_pipe(&err) {
+        DaemonError::PipeBroken(err.to_string())
+    } else {
+        DaemonError::Io(err)
     }
 }
 

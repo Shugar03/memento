@@ -222,6 +222,9 @@ fn startup_error_to_domain(err: &DaemonError) -> DomainError {
             message: format!("{err}"),
         },
         DaemonError::ConfigMismatch(_) | DaemonError::AuthFailed(_) => DomainError::AuthFailed,
+        DaemonError::PipeBroken(_) => DomainError::DaemonUnavailable {
+            message: format!("{err}"),
+        },
         DaemonError::PipeNotFound(_)
         | DaemonError::Timeout(_)
         | DaemonError::Protocol(_)
@@ -244,6 +247,7 @@ fn client_err_reason(err: &DaemonError) -> String {
         DaemonError::ConfigMismatch(reason) => format!("config_mismatch:{reason}"),
         DaemonError::Protocol(reason) => format!("protocol:{reason}"),
         DaemonError::CookieMissing(path) => format!("cookie_missing:{}", path.display()),
+        DaemonError::PipeBroken(reason) => format!("pipe_broken:{reason}"),
         DaemonError::Io(e) => format!("io:{e}"),
     }
 }
@@ -363,6 +367,11 @@ mod tests {
             client_err_reason(&DaemonError::CookieMissing(std::path::PathBuf::from("/x")))
                 .starts_with("cookie_missing:"),
             "cookie_missing tier"
+        );
+        assert_eq!(
+            client_err_reason(&DaemonError::PipeBroken("died".into())),
+            "pipe_broken:died",
+            "pipe_broken tier (REQ-DAEMON-013)"
         );
     }
 }

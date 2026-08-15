@@ -69,6 +69,8 @@ pub enum StringKey {
     ErrSubprocessTimeout,
     ErrSubprocessStdoutOverflow,
     ErrSubprocessArgvInvalid,
+    // REQ-DAEMON-013: bounded auto-restart exhausted.
+    ErrDaemonUnavailable,
     // CLI help (REQ-CL-004).
     CliHelpTenantCreate,
     CliHelpIngest,
@@ -134,7 +136,7 @@ pub enum StringKey {
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 96] = [
+    pub const ALL: [StringKey; 97] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -173,6 +175,7 @@ impl StringKey {
         StringKey::ErrSubprocessTimeout,
         StringKey::ErrSubprocessStdoutOverflow,
         StringKey::ErrSubprocessArgvInvalid,
+        StringKey::ErrDaemonUnavailable,
         StringKey::CliHelpTenantCreate,
         StringKey::CliHelpIngest,
         StringKey::CliHelpSearch,
@@ -301,6 +304,9 @@ pub fn es(key: StringKey) -> &'static str {
         }
         StringKey::ErrSubprocessArgvInvalid => {
             "Argumentos del proceso auxiliar inválidos (metacaracteres en la ruta)."
+        }
+        StringKey::ErrDaemonUnavailable => {
+            "El daemon persistente no está disponible (agotó los reintentos acotados)."
         }
         // CLI help.
         StringKey::CliHelpTenantCreate => {
@@ -458,7 +464,10 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::ErrSubprocessTimeout => "Helper subprocess exceeded 60 seconds.",
         StringKey::ErrSubprocessStdoutOverflow => "Helper subprocess output exceeded 50 MB.",
         StringKey::ErrSubprocessArgvInvalid => {
-            "Invalid helper subprocess arguments (shell metacharacters in path)."
+            "Helper subprocess argv rejected (metacharacters in path)."
+        }
+        StringKey::ErrDaemonUnavailable => {
+            "Persistent daemon unavailable (bounded restart attempts exhausted)."
         }
         // CLI help.
         StringKey::CliHelpTenantCreate => "Create a tenant and print the access token once.",
