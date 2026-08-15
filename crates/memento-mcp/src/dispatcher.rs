@@ -106,23 +106,47 @@ pub enum CodeTool {
 /// and surface here so the dispatcher has one path for every MCP-callable
 /// op — `cli → pipe → dispatcher → AppService` mirrors `MCP-stdio →
 /// pipe → dispatcher → AppService` byte-for-byte.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// The `args` field carries the tool's JSON arguments (the same shape the
+/// MCP tool's input schema describes) so the daemon executes the call
+/// daemon-side; absent on older wire shapes (`#[serde(default)]`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "namespace", rename_all = "snake_case")]
 pub enum McpCommand {
     /// A `memory.*` call (T-072).
     Memory {
         /// The tool variant (Search, IngestText, …).
         tool: MemoryTool,
+        /// The tool arguments (JSON object; empty when the client sent
+        /// none or the wire predates the field).
+        #[serde(default)]
+        args: Value,
     },
     /// A `code.*` call (T-073).
     Code {
         /// The tool variant (ProjectOverview, …).
         tool: CodeTool,
+        /// The tool arguments (JSON object; see `Memory::args`).
+        #[serde(default)]
+        args: Value,
     },
     /// The CLI/MCP `stats` command (REQ-CL-006).
     Stats,
     /// The CLI/MCP `health` command (REQ-OP-001 Q3).
     Health,
+}
+
+impl McpCommand {
+    /// The dotted path that identifies the command on the wire and in the
+    /// audit log (`memory.search`, `code.graph_dump`, …).
+    pub fn path(&self) -> String {
+        match self {
+            McpCommand::Memory { tool, .. } => format!("memory.{}", mem_name(*tool)),
+            McpCommand::Code { tool, .. } => format!("code.{}", code_name(*tool)),
+            McpCommand::Stats => "stats".to_string(),
+            McpCommand::Health => "health".to_string(),
+        }
+    }
 }
 
 /// The superset command: every accepted pipe request deserializes into
@@ -133,8 +157,9 @@ pub enum McpCommand {
 /// Wire shape (REQ-DAEMON-006 envelope):
 /// - `{"kind":"sys","command":"quiesce"}`
 /// - `{"kind":"mcp","command":{"namespace":"memory","tool":"search"}}`
+/// - `{"kind":"mcp","command":{"namespace":"memory","tool":"search","args":{"query":"x","workspace_id":"…"}}}`
 /// - `{"kind":"mcp","command":{"namespace":"stats"}}`
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "command", rename_all = "snake_case")]
 pub enum Command {
     Sys(SysCommand),
@@ -148,12 +173,7 @@ impl Command {
     pub fn path(&self) -> String {
         match self {
             Command::Sys(sys) => format!("sys.{}", sys_name(*sys)),
-            Command::Mcp(mcp) => match mcp {
-                McpCommand::Memory { tool } => format!("memory.{}", mem_name(*tool)),
-                McpCommand::Code { tool } => format!("code.{}", code_name(*tool)),
-                McpCommand::Stats => "stats".to_string(),
-                McpCommand::Health => "health".to_string(),
-            },
+            Command::Mcp(mcp) => mcp.path(),
         }
     }
 }
@@ -198,8 +218,11 @@ pub struct DaemonState {
     pub reranker: Option<Arc<dyn RerankPort>>,
     /// Injectable clock (REQ-ML-003, design D5).
     pub clock: Arc<dyn Clock>,
-    /// The bound application service. `None` after `sys.quiesce`.
-    pub app: Mutex<Option<AppService>>,
+    /// The bound application service. `None` after `sys.quiesce`. Held as
+    /// `Arc` so requests can clone the handle, drop the lock, and then
+    /// await — a `MutexGuard` is not `Send`, and the daemon's accept loop
+    /// spawns one task per request (same pattern as `sys_resume`).
+    pub app: Mutex<Option<Arc<AppService>>>,
     /// Wall-clock instant the daemon became ready (REQ-DAEMON-007 `status`).
     pub started_at: DateTime<Utc>,
     /// Cooperative shutdown flag (REQ-DAEMON-013). Set by `sys.shutdown`;
@@ -227,7 +250,7 @@ impl DaemonState {
             embedder,
             reranker,
             clock,
-            app: Mutex::new(Some(initial_app)),
+            app: Mutex::new(Some(Arc::new(initial_app))),
             started_at: Utc::now(),
             shutdown: Arc::new(AtomicBool::new(false)),
         }
@@ -292,11 +315,59 @@ pub async fn dispatch_command_with_state(
     let path = cmd.path();
     tracing::info!(
         dispatch = %path,
-        "dispatch_command_with_state (B5 sys.* wired; mcp.* stays as routing marker)"
+        "dispatch_command_with_state (B5 sys.* wired; mcp.* search wired in the corrective batch)"
     );
     match cmd {
         Command::Sys(sys) => dispatch_sys_with_state(state, sys).await,
-        Command::Mcp(mcp) => dispatch_mcp(mcp),
+        Command::Mcp(mcp) => dispatch_mcp_with_state(state, mcp).await,
+    }
+}
+
+/// The `mcp.*` half of the stateful dispatch (REQ-DAEMON-008). The daemon
+/// executes the call against its bound `AppService` (the sole model/store
+/// owner) and returns the SAME JSON the direct MCP tool renders — the
+/// stdio proxy forwards it verbatim, so both carriers yield identical
+/// ids/scores.
+///
+/// Delegated today: `memory.search` (the acceptance-critical read path).
+/// The remaining tools keep the B4 routing marker; the proxy surfaces
+/// them as a structured "not delegated yet" error (follow-up: wire the
+/// remaining 14 tool bodies).
+async fn dispatch_mcp_with_state(
+    state: &DaemonState,
+    mcp: McpCommand,
+) -> Result<Value, DomainError> {
+    match mcp {
+        McpCommand::Memory {
+            tool: MemoryTool::Search,
+            args,
+        } => {
+            // Clone the handle, drop the lock, THEN await (a MutexGuard is
+            // not Send; the accept loop spawns one task per request).
+            let app = {
+                let guard = state.app.lock().expect("app lock");
+                guard
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| DomainError::Internal {
+                        message:
+                            "daemon is quiesced; sys.resume before mcp.* calls (REQ-DAEMON-009)"
+                                .into(),
+                    })?
+            };
+            crate::tools_memory::execute_search(&app, &state.ctx, &args).await
+        }
+        other => {
+            tracing::info!(
+                dispatch = %other.path(),
+                "mcp.* routing marker (body not delegated yet)"
+            );
+            Ok(json!({
+                "status": "dispatched",
+                "command": other.path(),
+                "phase": "b4_skeleton",
+            }))
+        }
     }
 }
 
@@ -387,7 +458,7 @@ async fn sys_resume(state: &DaemonState) -> Result<Value, DomainError> {
         if guard.is_some() {
             "already_open".to_string()
         } else {
-            *guard = Some(app);
+            *guard = Some(Arc::new(app));
             "resumed".to_string()
         }
     };
@@ -498,14 +569,10 @@ fn dispatch_sys(sys: SysCommand) -> Result<Value, DomainError> {
 }
 
 fn dispatch_mcp(mcp: McpCommand) -> Result<Value, DomainError> {
-    // B4: every MCP branch returns a routing marker. B5 replaces each
-    // arm with the matching AppService call.
-    let command = match mcp {
-        McpCommand::Memory { tool } => format!("memory.{}", mem_name(tool)),
-        McpCommand::Code { tool } => format!("code.{}", code_name(tool)),
-        McpCommand::Stats => "stats".to_string(),
-        McpCommand::Health => "health".to_string(),
-    };
+    // B4: every MCP branch returns a routing marker. The stateful path
+    // (`dispatch_mcp_with_state`) executes `memory.search`; the remaining
+    // bodies land in the follow-up.
+    let command = mcp.path();
     Ok(json!({
         "status": "dispatched",
         "command": command,
@@ -563,7 +630,14 @@ mod tests {
             (MemoryTool::ContextFit, "memory.context_fit"),
         ];
         for (tool, expected) in cases {
-            assert_eq!(Command::Mcp(McpCommand::Memory { tool }).path(), expected);
+            assert_eq!(
+                Command::Mcp(McpCommand::Memory {
+                    tool,
+                    args: json!({})
+                })
+                .path(),
+                expected
+            );
         }
     }
 
@@ -580,7 +654,14 @@ mod tests {
             (CodeTool::GraphDump, "code.graph_dump"),
         ];
         for (tool, expected) in cases {
-            assert_eq!(Command::Mcp(McpCommand::Code { tool }).path(), expected);
+            assert_eq!(
+                Command::Mcp(McpCommand::Code {
+                    tool,
+                    args: json!({})
+                })
+                .path(),
+                expected
+            );
         }
     }
 
@@ -692,8 +773,11 @@ mod tests {
             MemoryTool::Delete,
             MemoryTool::ContextFit,
         ] {
-            let value =
-                dispatch_mcp(McpCommand::Memory { tool }).expect("mcp memory dispatch is Ok in B4");
+            let value = dispatch_mcp(McpCommand::Memory {
+                tool,
+                args: json!({}),
+            })
+            .expect("mcp memory dispatch is Ok in B4");
             assert_eq!(value["status"], "dispatched");
             assert_eq!(value["phase"], "b4_skeleton");
             let marker = value["command"].as_str().expect("command string");
@@ -716,8 +800,11 @@ mod tests {
             CodeTool::Search,
             CodeTool::GraphDump,
         ] {
-            let value =
-                dispatch_mcp(McpCommand::Code { tool }).expect("mcp code dispatch is Ok in B4");
+            let value = dispatch_mcp(McpCommand::Code {
+                tool,
+                args: json!({}),
+            })
+            .expect("mcp code dispatch is Ok in B4");
             assert_eq!(value["status"], "dispatched");
             assert_eq!(value["phase"], "b4_skeleton");
             let marker = value["command"].as_str().expect("command string");
@@ -746,12 +833,14 @@ mod tests {
 
         let value = dispatch_command(Command::Mcp(McpCommand::Memory {
             tool: MemoryTool::Search,
+            args: json!({}),
         }))
         .expect("mcp memory search");
         assert_eq!(value["command"], "memory.search");
 
         let value = dispatch_command(Command::Mcp(McpCommand::Code {
             tool: CodeTool::GraphDump,
+            args: json!({}),
         }))
         .expect("mcp code graph_dump");
         assert_eq!(value["command"], "code.graph_dump");
@@ -1008,21 +1097,51 @@ mod tests {
 
         #[tokio::test]
         async fn mcp_branches_still_route_as_b4_marker() {
-            // B5 only wires sys.*; mcp.* stays as a routing marker (the
-            // mcp body wiring lands in B7). The shape stays frozen so the
-            // dispatcher's JSON envelope remains stable across batches.
+            // B5 wires sys.*; the corrective batch wires memory.search.
+            // Non-delegated mcp.* stays as the B4 routing marker.
             let (_ts, state) = state_with_open_app().await;
             let value = dispatch_command_with_state(
                 &state,
                 Command::Mcp(McpCommand::Memory {
-                    tool: MemoryTool::Search,
+                    tool: MemoryTool::IngestText,
+                    args: json!({}),
                 }),
             )
             .await
-            .expect("mcp search routes");
+            .expect("mcp ingest_text routes");
             assert_eq!(value["status"], "dispatched");
             assert_eq!(value["phase"], "b4_skeleton");
-            assert_eq!(value["command"], "memory.search");
+            assert_eq!(value["command"], "memory.ingest_text");
+        }
+
+        #[tokio::test]
+        async fn search_dispatches_to_the_app_service_with_args() {
+            // REQ-DAEMON-008: memory.search now EXECUTES daemon-side —
+            // the response is the rendered SearchOutput JSON (not the B4
+            // marker), and a query with no hits is a valid empty result.
+            let (ts, state) = state_with_open_app().await;
+            let ws = ts.ctx().workspace_id().to_string();
+            let value = dispatch_command_with_state(
+                &state,
+                Command::Mcp(McpCommand::Memory {
+                    tool: MemoryTool::Search,
+                    args: json!({
+                        "query": "no-such-term-in-an-empty-store",
+                        "workspace_id": ws,
+                        "top_k": 5,
+                    }),
+                }),
+            )
+            .await
+            .expect("search executes");
+            assert!(
+                value["hits"].is_array(),
+                "daemon-side SearchOutput carries hits: {value}"
+            );
+            assert!(
+                value["hits"].as_array().unwrap().is_empty(),
+                "empty store → zero hits (real body, not the B4 marker)"
+            );
         }
 
         #[tokio::test]

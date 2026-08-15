@@ -144,6 +144,7 @@ async fn run_mini_daemon(
                 no_embeddings: false,
                 locale: daemon_locale,
             },
+            role: Role::Cli,
         };
         let payload = serde_json::to_vec(&welcome).expect("serialize WELCOME");
         if let Err(err) = frame::write_message(&mut conn, &payload).await {
@@ -321,6 +322,7 @@ fn welcome_envelope_carries_spawn_config_locale() {
             no_embeddings: false,
             locale: Some("en".into()),
         },
+        role: Role::Cli,
     };
     let bytes = serde_json::to_vec(&welcome).expect("serialize");
     let parsed: Value = serde_json::from_slice(&bytes).expect("parse");

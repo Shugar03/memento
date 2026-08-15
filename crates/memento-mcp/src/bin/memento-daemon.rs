@@ -352,14 +352,16 @@ async fn main() -> Result<(), StartupError> {
 }
 
 /// Per-connection service loop: read one framed request, dispatch through
-/// the B5 [`DaemonState`], write one framed response. Today only `sys.*`
-/// is wired; mcp.* requests still return the B4 routing marker (the mcp
-/// body plumbing lands in B7 once the per-tool AppService calls are
-/// exposed).
+/// the B5 [`DaemonState`], write one framed response.
+///
+/// REQ-DAEMON-012 role gate (D4): a connection that presented
+/// `Role::McpProxy` may only reach the public 15 tools — `sys.*` is
+/// CLI-only. Refusals (and dispatch failures) are answered with a
+/// structured error envelope so the client never hangs on a dead request.
 async fn serve_request<S>(
     conn: &mut S,
     state: Arc<DaemonState>,
-    _welcome: &memento_mcp::handshake::Welcome,
+    welcome: &memento_mcp::handshake::Welcome,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -381,11 +383,40 @@ async fn serve_request<S>(
             return;
         }
     };
+    // Role gate (REQ-DAEMON-012): mcp_proxy connections are confined to
+    // the public 15 tools. The refusal is a structured envelope — the
+    // stdio proxy translates it into a tool-level error.
+    if welcome.role == memento_mcp::handshake::Role::McpProxy && matches!(cmd, Command::Sys(_)) {
+        warn!(
+            path = %cmd.path(),
+            "daemon: role gate refused sys.* for mcp_proxy"
+        );
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "status": "error",
+            "code": "FORBIDDEN",
+            "message": "sys.* is CLI-only (REQ-DAEMON-012); the MCP stdio proxy exposes the public 15 tools only",
+            "exit_code": 2,
+        }))
+        .expect("refusal envelope serializes");
+        if let Err(err) = frame::write_message(conn, &payload).await {
+            warn!(?err, "daemon: refusal write failed");
+        }
+        return;
+    }
     let value = match dispatcher::dispatch_command_with_state(&state, cmd).await {
         Ok(v) => v,
         Err(err) => {
+            // Structured error envelope: the client gets a readable
+            // failure instead of a hang (REQ-DAEMON-006: request fails,
+            // daemon keeps serving).
             warn!(?err, "daemon: dispatch failed");
-            return;
+            let err_value: serde_json::Value = err.into();
+            serde_json::json!({
+                "status": "error",
+                "code": err_value["code"],
+                "message": err_value["message"],
+                "exit_code": err_value["exit_code"],
+            })
         }
     };
     let payload = dispatcher::serialize_response(&value);

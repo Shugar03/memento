@@ -225,6 +225,9 @@ where
             no_embeddings: auth.no_embeddings,
             locale: auth.locale.clone(),
         },
+        // Echo the granted role (REQ-DAEMON-012): the accept loop's role
+        // gate keys off this.
+        role: hello.role,
     };
     let payload = serde_json::to_vec(&welcome)
         .map_err(|err| HandshakeError::Protocol(format!("WELCOME serialization failed: {err}")))?;

@@ -26,7 +26,7 @@
 use memento_domain::TenantId;
 use memento_mcp::daemon::{DaemonPipe, pipe_name};
 use memento_mcp::frame;
-use memento_mcp::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
+use memento_mcp::handshake::{Capability, Hello, PROTOCOL_VERSION, Role, SpawnConfig, Welcome};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
@@ -171,6 +171,7 @@ async fn observability_metrics_daemon_hello_welcome_handshake_works_on_real_pipe
                 no_embeddings: false,
                 locale: Some("en".into()), // MISMATCH: client is "es"
             },
+            role: Role::Cli,
         };
         let payload = serde_json::to_vec(&welcome).expect("serialize WELCOME");
         let _ = frame::write_message(&mut conn, &payload).await;

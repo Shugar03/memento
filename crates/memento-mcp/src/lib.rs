@@ -31,6 +31,7 @@ pub mod errors;
 pub mod frame;
 pub mod handshake;
 pub mod job;
+pub mod proxy;
 pub mod router;
 pub mod tools_code;
 pub mod tools_memory;

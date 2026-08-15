@@ -447,6 +447,7 @@ mod tests {
                     no_embeddings: config_server.no_embeddings,
                     locale: config_server.locale.clone(),
                 },
+                role: Role::Cli,
             };
             let payload = serde_json::to_vec(&welcome).expect("WELCOME json");
             frame::write_message(&mut a, &payload)

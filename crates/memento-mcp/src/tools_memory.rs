@@ -6,6 +6,7 @@
 
 use std::str::FromStr;
 
+use memento_application::AppService;
 use memento_application::context_fit::ContextFitRequest;
 use memento_domain::{ChunkId, DocId, DomainError, SourceKind, WorkspaceId};
 use memento_ports::{
@@ -467,6 +468,45 @@ fn ingest_output(result: IngestResult) -> IngestOutput {
         doc_id: result.doc_id.to_string(),
         chore_id: result.chore_id.map(|id| id.to_string()),
     }
+}
+
+/// Daemon-side execution of `memory.search` (REQ-DAEMON-008). Parses the
+/// wire `args` (the same shape the MCP tool's input schema describes),
+/// runs the search against the daemon's bound `AppService`, and renders
+/// the SAME `SearchOutput` JSON the direct tool produces — the stdio
+/// proxy forwards it verbatim so both carriers return identical
+/// ids/scores (REQ-MS-006 equivalence).
+///
+/// Lives here (not in the dispatcher) so the rendering stays single-source
+/// with the direct tool path.
+pub(crate) async fn execute_search(
+    app: &AppService,
+    ctx: &memento_domain::TenantContext,
+    args: &Value,
+) -> Result<Value, DomainError> {
+    let p: SearchParams =
+        serde_json::from_value(args.clone()).map_err(|err| DomainError::InvalidInput {
+            message: format!("memory.search args: {err}"),
+        })?;
+    let workspace_id = parse_workspace(&p.workspace_id).map_err(|err| err.0)?;
+    let hits = app
+        .search(
+            ctx,
+            SearchQuery {
+                query: p.query,
+                top_k: top_k_or_default(p.top_k),
+                workspace_id,
+                rrf_enabled: p.rrf_enabled,
+                rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
+                rerank: p.rerank,
+                filters: None,
+            },
+        )
+        .await?;
+    Ok(serde_json::to_value(SearchOutput {
+        hits: hits.into_iter().map(hit_dto).collect(),
+    })
+    .expect("SearchOutput always serializes"))
 }
 
 #[cfg(test)]

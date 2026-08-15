@@ -321,10 +321,9 @@ async fn accept_loop(
                             return;
                         }
                     };
-                    if let Err(err) = serve_request(&mut conn, state.clone(), timeout).await {
+                    if let Err(err) = serve_request(&mut conn, state.clone(), &welcome, timeout).await {
                         warn!(?err, "DaemonFixture: serve_request failed");
                     }
-                    let _ = welcome;
                 });
             }
         }
@@ -334,6 +333,7 @@ async fn accept_loop(
 async fn serve_request<S>(
     conn: &mut S,
     state: Arc<DaemonState>,
+    welcome: &Welcome,
     timeout: Duration,
 ) -> Result<(), std::io::Error>
 where
@@ -351,11 +351,34 @@ where
             return Ok(());
         }
     };
+    // REQ-DAEMON-012 role gate (D4): mcp_proxy is confined to the public
+    // 15 tools; sys.* refusals are structured envelopes (never a hang).
+    if welcome.role == Role::McpProxy && matches!(cmd, Command::Sys(_)) {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "status": "error",
+            "code": "FORBIDDEN",
+            "message": "sys.* is CLI-only (REQ-DAEMON-012); the MCP stdio proxy exposes the public 15 tools only",
+            "exit_code": 2,
+        }))
+        .expect("refusal envelope serializes");
+        tokio::time::timeout(timeout, frame::write_message(conn, &payload))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "refusal write timeout")
+            })??;
+        return Ok(());
+    }
     let value = match dispatch_command_with_state(&state, cmd).await {
         Ok(v) => v,
         Err(err) => {
             warn!(?err, "DaemonFixture: dispatch failed");
-            return Ok(());
+            let err_value: serde_json::Value = err.into();
+            serde_json::json!({
+                "status": "error",
+                "code": err_value["code"],
+                "message": err_value["message"],
+                "exit_code": err_value["exit_code"],
+            })
         }
     };
     let payload = serde_json::to_vec(&value).expect("dispatcher response serializes");
