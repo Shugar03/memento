@@ -180,7 +180,7 @@ mod tests {
         ]]
         .assert_eq(es(StringKey::McpToolFeedbackDesc));
         expect_test::expect![[
-            r#"Elimina de forma permanente fragmentos, documentos, workspaces o el tenant."#
+            r#"Elimina de forma permanente fragmentos, documentos o workspaces. El borrado GDPR del tenant requiere `memento tenant delete`."#
         ]]
         .assert_eq(es(StringKey::McpToolDeleteDesc));
         expect_test::expect![[r#"Selecciona los fragmentos que mejor caben en un presupuesto de tokens para contexto."#]]
