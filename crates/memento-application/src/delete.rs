@@ -106,10 +106,12 @@ mod tests {
             .ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
+
                     text: "la memoria es un río subterráneo que fluye".into(),
                     doc_id: None,
                     metadata: None,
-                },
+                    workspace_id: None,
+        },
             )
             .await
             .expect("doc a");
@@ -117,10 +119,12 @@ mod tests {
             .ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
+
                     text: "la tecnología cambia el trabajo diario".into(),
                     doc_id: None,
                     metadata: None,
-                },
+                    workspace_id: None,
+        },
             )
             .await
             .expect("doc b");

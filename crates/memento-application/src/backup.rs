@@ -481,10 +481,12 @@ mod tests {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text: text.to_string(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest");
@@ -550,10 +552,12 @@ mod tests {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text: "dato que debe sobrevivir a un backup corrupto".into(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest");
@@ -580,10 +584,12 @@ mod tests {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text: "memoria viva".into(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest");
@@ -606,10 +612,12 @@ mod tests {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text: "memoria para el layout".into(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest");

@@ -150,6 +150,7 @@ impl AppService {
             let doc_id = req.doc_id.unwrap_or_default();
             let title = title_of(req.metadata.as_ref());
             let created_at = self.clock.now();
+            let workspace_id = self.resolve_ingest_workspace(ctx, req.workspace_id)?;
 
             self.stage_chunks(
                 ctx,
@@ -161,6 +162,7 @@ impl AppService {
                     content_hash: hash,
                     created_at,
                     chore_id,
+                    workspace_id,
                 },
             )
             .await
@@ -250,6 +252,7 @@ impl AppService {
             let doc_id = req.doc_id.unwrap_or_default();
             let title = title_of(req.metadata.as_ref());
             let created_at = self.clock.now();
+            let workspace_id = self.resolve_ingest_workspace(ctx, req.workspace_id)?;
 
             self.stage_chunks(
                 ctx,
@@ -261,12 +264,23 @@ impl AppService {
                     content_hash: hash,
                     created_at,
                     chore_id,
+                    workspace_id,
                 },
             )
             .await
         }
         .instrument(span)
         .await
+    }
+
+    /// Resolve the write target workspace (REQ-WS-003): request override or
+    /// the process-bound default. Tenant identity is never overridden.
+    fn resolve_ingest_workspace(
+        &self,
+        ctx: &TenantContext,
+        requested: Option<memento_domain::WorkspaceId>,
+    ) -> Result<memento_domain::WorkspaceId, DomainError> {
+        Ok(requested.unwrap_or_else(|| *ctx.workspace_id()))
     }
 
     /// The shared pipeline tail (B2): chunk-count pre-check → pipelined
@@ -359,7 +373,7 @@ impl AppService {
         let doc = DocRecord {
             doc_id: spec.doc_id,
             tenant_id: *ctx.tenant_id(),
-            workspace_id: *ctx.workspace_id(),
+            workspace_id: spec.workspace_id,
             agent_id: ctx.agent_id().clone(),
             title: spec.title.clone(),
             source: spec.source.clone(),
@@ -423,7 +437,7 @@ impl AppService {
                 MemoryChunk {
                     id,
                     tenant_id: *ctx.tenant_id(),
-                    workspace_id: *ctx.workspace_id(),
+                    workspace_id: spec.workspace_id,
                     agent_id: ctx.agent_id().clone(),
                     doc_id: spec.doc_id,
                     text: text.clone(),
@@ -441,7 +455,7 @@ impl AppService {
                         // env-only guess.
                         embedding_model_version: self.embedding_model_version().to_string(),
                         tenant_id: *ctx.tenant_id(),
-                        workspace_id: *ctx.workspace_id(),
+                        workspace_id: spec.workspace_id,
                         agent_id: ctx.agent_id().clone(),
                     },
                 }
@@ -458,6 +472,8 @@ struct StageSpec {
     content_hash: String,
     created_at: chrono::DateTime<chrono::Utc>,
     chore_id: ChoreId,
+    /// Target workspace for provenance + docs row (REQ-WS-003).
+    workspace_id: memento_domain::WorkspaceId,
 }
 
 /// Metadata → docs title: only `metadata["title"]` is honored (the rest of
@@ -494,6 +510,7 @@ mod tests {
             text: text.to_string(),
             doc_id: None,
             metadata: None,
+            workspace_id: None,
         }
     }
 
@@ -596,10 +613,12 @@ mod tests {
             .ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
+
                     text,
                     doc_id: Some(DocId::new()),
                     metadata: None,
-                },
+                    workspace_id: None,
+        },
             )
             .await
             .expect("ingest ok");
@@ -646,6 +665,7 @@ mod tests {
             .ingest_document(
                 &ts.ctx(),
                 IngestDocumentRequest {
+
                     blob: markdown.as_bytes().to_vec(),
                     source_hint: SourceKind::Markdown,
                     doc_id: None,
@@ -655,7 +675,8 @@ mod tests {
                             .unwrap()
                             .clone(),
                     )),
-                },
+                    workspace_id: None,
+        },
             )
             .await
             .expect("ingest ok");
@@ -687,11 +708,13 @@ mod tests {
             .ingest_document(
                 &ts.ctx(),
                 IngestDocumentRequest {
+
                     blob: b"corrupt".to_vec(),
                     source_hint: SourceKind::Document("docx".into()),
                     doc_id: None,
                     metadata: None,
-                },
+                    workspace_id: None,
+        },
             )
             .await
             .expect_err("parse fails");
@@ -762,11 +785,13 @@ mod tests {
             .ingest_document(
                 &ts.ctx(),
                 IngestDocumentRequest {
+
                     blob,
                     source_hint: SourceKind::Markdown,
                     doc_id: None,
                     metadata: None,
-                },
+                    workspace_id: None,
+        },
             )
             .await
             .expect_err("too big");
@@ -952,5 +977,47 @@ mod tests {
         );
         // SAFETY: test-only env mutation, serialized by METRICS_ENV_LOCK.
         unsafe { std::env::remove_var("MEMENTO_METRICS") };
+    }
+
+    #[tokio::test]
+    async fn ingest_into_explicit_workspace_is_isolated_from_default() {
+        // REQ-WS-003: writes stamp the requested workspace; search scoped
+        // to another workspace returns zero hits.
+        let ts = TempStore::new();
+        let other = memento_domain::WorkspaceId::new();
+        let app = test_app(&ts, TestClock::default()).await;
+        app.ingest_text(
+            &ts.ctx(),
+            IngestTextRequest {
+                text: "contenido solo en workspace B secreto unico".into(),
+                doc_id: None,
+                metadata: None,
+                workspace_id: Some(other),
+            },
+        )
+        .await
+        .expect("ingest into other ws");
+
+        let hits_other = app
+            .search(
+                &ts.ctx(),
+                SearchQuery::new("secreto unico", 5, other),
+            )
+            .await
+            .expect("search other");
+        assert_eq!(hits_other.len(), 1);
+        assert_eq!(hits_other[0].provenance.workspace_id, other);
+
+        let hits_default = app
+            .search(
+                &ts.ctx(),
+                SearchQuery::new("secreto unico", 5, *ts.workspace_id()),
+            )
+            .await
+            .expect("search default");
+        assert!(
+            hits_default.is_empty(),
+            "default workspace must not see other-ws writes"
+        );
     }
 }

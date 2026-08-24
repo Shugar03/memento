@@ -136,10 +136,12 @@ async fn ingest_corpus(app: &AppService, ts: &TempStore) {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text,
                 doc_id: None,
                 metadata: Some(Metadata(meta)),
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest fixture doc");

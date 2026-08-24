@@ -759,10 +759,12 @@ mod tenant_guard_tests {
             .ingest_text(
                 &foreign,
                 IngestTextRequest {
+
                     text: "forbidden".into(),
                     doc_id: None,
                     metadata: None,
-                },
+                    workspace_id: None,
+        },
             )
             .await
             .expect_err("ingest forbidden");
@@ -870,6 +872,7 @@ mod events_tests {
             text: text.to_string(),
             doc_id: None,
             metadata: None,
+            workspace_id: None,
         }
     }
 

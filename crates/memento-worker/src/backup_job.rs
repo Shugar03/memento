@@ -97,10 +97,12 @@ mod tests {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text: "la memoria persiste a través del trabajo de respaldo".into(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest");

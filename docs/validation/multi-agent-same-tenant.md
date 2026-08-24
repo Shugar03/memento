@@ -15,8 +15,8 @@
 - Inside the default workspace, Agent A (`codex-agent`) and Agent B (`claude-agent`) wrote to and read from the same store. Both saw each other's chunks; provenance correctly attributed the writes back to the original agent.
 - Pointing `search --workspace <other-uuid>` at a workspace with no data returned an empty hit list â€” the read-side isolation boundary holds.
 - `tenant delete` ran once and immediately locked out **both** agents with `AUTH_FAILED` (the credential hash is gone â€” uniform across all agents by construction, since the resolver only checks the token).
-- **Gap 1 (non-blocking, documented)**: only `search`, `context-fit`, and `delete` accept `--workspace`. **`ingest text`, `ingest document`, `ingest bulk`, and `code index` ignore the flag** â€” every write is forced into the process-bound default workspace. The default workspace is the only writable surface today; non-default workspaces are read-only from the CLI.
-- **Gap 2 (non-blocking, documented)**: there is no `workspace` subcommand and no way to provision a new workspace from the CLI. Workspaces are opaque UUIDs. The only way to target a non-default workspace today is to pass a known UUID to `--workspace` (which means someone must mint the UUID externally). No "workspace create" / "workspace list" exists.
+- **Gap 1 (resolved — REQ-WS-003)**: `ingest text|document|bulk` accept `--workspace`; writes stamp the requested workspace. See `docs/design/h0-h1-workspaces.md` and `crates/memento-cli/tests/h0_h1_workspaces.rs`.
+- **Gap 2 (resolved — REQ-WS-001/002)**: `memento workspace create|list` provisions and lists workspaces (default always included).
 - **Gap 3 (non-blocking, documented)**: `stats` aggregates per workspace; there is no `chunks_by_agent` breakdown. Per-agent telemetry has to be reconstructed by re-scanning the `chunks` table on the `agent_id` column.
 
 ---

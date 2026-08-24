@@ -88,10 +88,12 @@ fn measure_cold_start(ctx: &TenantContext) {
         let _ = rt.block_on(seed.ingest_text(
             ctx,
             memento_ports::IngestTextRequest {
+
                 text: common::doc_text(5, 1),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         ));
     } // seed app dropped: store closed before the measured open
 
@@ -135,10 +137,12 @@ fn bench_search(c: &mut Criterion) {
                 .block_on(app.ingest_text(
                     &ctx,
                     memento_ports::IngestTextRequest {
+
                         text: doc.clone(),
                         doc_id: None,
                         metadata: None,
-                    },
+                        workspace_id: None,
+        },
                 ))
                 .expect("corpus ingest succeeds");
             total += res.chunk_ids.len();

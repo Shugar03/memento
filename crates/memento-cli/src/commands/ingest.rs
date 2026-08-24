@@ -23,9 +23,10 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use clap::ArgMatches;
-use memento_domain::{DomainError, SourceKind};
+use memento_domain::{DomainError, SourceKind, WorkspaceId};
 use memento_ports::{IngestDocumentRequest, IngestTextRequest, Metadata};
 use serde_json::{Value, json};
+use std::str::FromStr;
 
 use crate::output::{emit_json, emit_json_value};
 use crate::startup::CliApp;
@@ -72,6 +73,16 @@ fn doc_id_of(m: &ArgMatches) -> Result<Option<memento_domain::DocId>, DomainErro
         .transpose()
 }
 
+fn workspace_of(m: &ArgMatches) -> Result<Option<WorkspaceId>, DomainError> {
+    m.get_one::<String>("workspace")
+        .map(|raw| {
+            WorkspaceId::from_str(raw).map_err(|_| DomainError::InvalidInput {
+                message: format!("workspace is not a valid uuid: {raw}"),
+            })
+        })
+        .transpose()
+}
+
 /// Dispatch the `ingest` subtree.
 pub async fn run(sub: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     match sub.subcommand() {
@@ -84,7 +95,8 @@ pub async fn run(sub: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     }
 }
 
-/// `ingest text <text> [--doc-id <uuid>]` (REQ-MC-001).
+/// `ingest text <text> [--doc-id <uuid>] [--workspace <uuid>]` (REQ-MC-001,
+/// REQ-WS-003).
 async fn ingest_text(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     let text = m.get_one::<String>("text").expect("clap: required");
     let result = app
@@ -95,6 +107,7 @@ async fn ingest_text(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
                 text: text.clone(),
                 doc_id: doc_id_of(m)?,
                 metadata: None,
+                workspace_id: workspace_of(m)?,
             },
         )
         .await?;
@@ -111,7 +124,7 @@ async fn ingest_text(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
 }
 
 /// `ingest document <file> [--source <text|markdown|document:ext>]
-/// [--doc-id <uuid>]` (REQ-MC-002).
+/// [--doc-id <uuid>] [--workspace <uuid>]` (REQ-MC-002, REQ-WS-003).
 async fn ingest_document(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
     let file = PathBuf::from(m.get_one::<String>("file").expect("clap: required"));
     let file = canonical_document_within(&app.root, &file)?;
@@ -138,6 +151,7 @@ async fn ingest_document(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError
                         .cloned()
                         .unwrap_or_default(),
                 )),
+                workspace_id: workspace_of(m)?,
             },
         )
         .await?;
@@ -207,6 +221,7 @@ async fn bulk(m: &ArgMatches, app: &CliApp) -> Result<(), DomainError> {
                     source_hint: hint,
                     doc_id: None,
                     metadata: None,
+                    workspace_id: workspace_of(m)?,
                 },
             )
             .await

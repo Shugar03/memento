@@ -236,10 +236,12 @@ mod tests {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text: "la memoria exportada viaja con su procedencia completa".into(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest");
@@ -326,10 +328,12 @@ mod tests {
         app.ingest_text(
             &ts.ctx(),
             IngestTextRequest {
+
                 text: "la memoria no viaja con secretos memo_abc123".into(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("ingest");

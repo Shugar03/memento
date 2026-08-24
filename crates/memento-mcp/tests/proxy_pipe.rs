@@ -173,10 +173,12 @@ async fn stdio_proxy_search_returns_identical_ids_and_scores_as_direct() {
         app.ingest_text(
             &store.ctx(),
             IngestTextRequest {
+
                 text: "the quick brown fox jumps over the lazy dog daemon proxy".into(),
                 doc_id: None,
                 metadata: None,
-            },
+                workspace_id: None,
+        },
         )
         .await
         .expect("seed ingest");
