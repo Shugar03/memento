@@ -636,7 +636,9 @@ mod tests {
 
         let ts = TempStore::new();
         let app = test_app(&ts, TestClock::default()).await;
-        app.backup(&ts.ctx()).await.expect("backup creates master key");
+        app.backup(&ts.ctx())
+            .await
+            .expect("backup creates master key");
 
         let master = app.tenant_dir().join("keys").join("master.key");
         let mode = std::fs::metadata(&master)

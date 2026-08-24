@@ -26,8 +26,8 @@ use std::time::Duration;
 use interprocess::os::windows::named_pipe::{pipe_mode, tokio::PipeStream};
 use memento_mcp::{
     frame,
-    pipe_naming::{DEFAULT_PIPE_TIMEOUT, pipe_name},
     handshake::{Hello, PROTOCOL_VERSION, Role, Welcome},
+    pipe_naming::{DEFAULT_PIPE_TIMEOUT, pipe_name},
 };
 use thiserror::Error;
 use tokio::time::timeout;

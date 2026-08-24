@@ -17,6 +17,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::frame;
+use crate::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
+use crate::pipe_naming::{DEFAULT_PIPE_TIMEOUT, pipe_name};
 use interprocess::os::windows::named_pipe::{
     PipeListenerOptions, pipe_mode,
     tokio::{PipeListener, PipeStream},
@@ -24,9 +27,6 @@ use interprocess::os::windows::named_pipe::{
 use memento_application::audit::AuditLogger;
 use memento_domain::{DomainError, TenantContext, TenantId};
 use serde_json::json;
-use crate::frame;
-use crate::pipe_naming::{DEFAULT_PIPE_TIMEOUT, pipe_name};
-use crate::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
 
 pub use crate::pipe_naming::DEFAULT_PIPE_TIMEOUT;
 

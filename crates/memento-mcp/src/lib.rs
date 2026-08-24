@@ -25,7 +25,6 @@
 //! * [`tools_memory`] — the 7 `memory.*` tools (T-072).
 //! * [`tools_code`] — the 8 read-only `code.*` tools (T-073).
 
-pub mod pipe_naming;
 #[cfg(windows)]
 pub mod daemon;
 pub mod dispatcher;
@@ -33,6 +32,7 @@ pub mod errors;
 pub mod frame;
 pub mod handshake;
 pub mod job;
+pub mod pipe_naming;
 #[cfg(windows)]
 pub mod proxy;
 pub mod router;

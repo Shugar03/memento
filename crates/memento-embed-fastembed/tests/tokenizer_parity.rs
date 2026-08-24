@@ -50,7 +50,19 @@ fn patched_tokenizer_matches_unpatched_golden() {
         Some(texts.len())
     );
 
-    let tokenizer = Tokenizer::from_file(model_tokenizer_path()).expect("load e5 tokenizer");
+    // The int8 model tree is provisioned only by the ir-gate CI job (and
+    // local `provision_int8.py`). The default `cargo test --all` job does
+    // not download it — skip cleanly so CI stays green without a 265 MB
+    // fixture in every run.
+    let tokenizer_path = model_tokenizer_path();
+    if !tokenizer_path.exists() {
+        eprintln!(
+            "skipping tokenizer parity: e5 tokenizer missing at {}",
+            tokenizer_path.display()
+        );
+        return;
+    }
+    let tokenizer = Tokenizer::from_file(&tokenizer_path).expect("load e5 tokenizer");
     assert_eq!(
         tokenizer.get_vocab_size(true),
         golden["vocab_size"].as_u64().expect("golden vocab_size") as usize,

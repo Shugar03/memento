@@ -778,12 +778,7 @@ mod tenant_guard_tests {
         assert_eq!(search_err.code(), "TENANT_FORBIDDEN");
 
         let delete_err = app
-            .delete(
-                &foreign,
-                DeleteScope::Chunk {
-                    id: ChunkId::new(),
-                },
-            )
+            .delete(&foreign, DeleteScope::Chunk { id: ChunkId::new() })
             .await
             .expect_err("delete forbidden");
         assert_eq!(delete_err.code(), "TENANT_FORBIDDEN");
@@ -797,12 +792,7 @@ mod tenant_guard_tests {
         let fit_err = app
             .context_fit(
                 &foreign,
-                crate::context_fit::ContextFitRequest::new(
-                    "forbidden",
-                    100,
-                    5,
-                    *ts.workspace_id(),
-                ),
+                crate::context_fit::ContextFitRequest::new("forbidden", 100, 5, *ts.workspace_id()),
             )
             .await
             .expect_err("context_fit forbidden");

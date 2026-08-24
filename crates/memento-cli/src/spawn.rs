@@ -36,10 +36,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use memento_domain::TenantId;
-use memento_mcp::pipe_name;
 use memento_mcp::dispatcher::{Command as DispatchCommand, SysCommand};
 use memento_mcp::frame;
 use memento_mcp::job::StartupJob;
+use memento_mcp::pipe_name;
 use thiserror::Error;
 use tokio::time::sleep;
 use tracing::{info, warn};
