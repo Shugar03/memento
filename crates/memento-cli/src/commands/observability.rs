@@ -19,13 +19,19 @@
 
 use clap::ArgMatches;
 use memento_domain::DomainError;
+#[cfg(windows)]
 use memento_mcp::dispatcher::SysCommand;
+#[cfg(windows)]
 use memento_mcp::frame;
+#[cfg(windows)]
 use serde_json::{Value, json};
 use std::path::PathBuf;
+#[cfg(windows)]
 use tracing::warn;
 
-use crate::transport::pipe_client::{ClientConfig, DaemonClient, DaemonError, NO_DAEMON_ENV};
+use crate::transport::pipe_client::NO_DAEMON_ENV;
+#[cfg(windows)]
+use crate::transport::pipe_client::{ClientConfig, DaemonClient, DaemonError};
 
 /// The dump destination override (REQ-OBS-007): `MEMENTO_METRICS_FILE` when
 /// set, stdout otherwise.
@@ -58,85 +64,93 @@ fn emit(body: String) -> Result<(), DomainError> {
 /// `sys.metrics`, extract the rendered body. Any failure along the way
 /// falls back to the local dump (see module docs).
 async fn try_daemon_metrics() -> Result<Option<String>, DomainError> {
-    // Build the client config. Missing env vars surface as a structured
-    // error → fall back to local (the standalone dump is root-independent,
-    // REQ-OBS-007 / D7).
-    let config = match ClientConfig::from_env() {
-        Ok(c) => c,
-        Err(err) => {
-            warn!(
-                tier = "client_config",
-                ?err,
-                "observability metrics: falling back to local dump"
-            );
-            return Ok(None);
-        }
-    };
-    // Connect. No live daemon → local dump, NEVER auto-spawn
-    // (REQ-DAEMON-010).
-    let mut client = match DaemonClient::connect(&config).await {
-        Ok(c) => c,
-        Err(DaemonError::PipeNotFound(_))
-        | Err(DaemonError::Timeout(_))
-        | Err(DaemonError::CookieMissing(_)) => {
-            warn!("observability metrics: no live daemon; local dump");
-            return Ok(None);
-        }
-        Err(err) => {
-            warn!(?err, "observability metrics: connect failed; local dump");
-            return Ok(None);
-        }
-    };
-    // Send `sys.metrics`. Wire shape:
-    //   {"kind":"sys","command":"metrics"} → framed bytes
-    let request = json!({
-        "kind": "sys",
-        "command": SysCommand::Metrics,
-    });
-    let request_bytes = serde_json::to_vec(&request).map_err(|err| DomainError::Internal {
-        message: format!("serializing sys.metrics request: {err}"),
-    })?;
-    // Frame::write_message is provided by memento-mcp::frame.
-    let timeout_d = config.pipe_timeout;
-    let write_result = tokio::time::timeout(
-        timeout_d,
-        frame::write_message(&mut client.conn, &request_bytes),
-    )
-    .await
-    .map_err(|_| DomainError::Internal {
-        message: format!("sys.metrics request write timed out after {timeout_d:?}"),
-    })?;
-    if let Err(err) = write_result {
-        warn!(?err, "observability metrics: write failed; local dump");
-        return Ok(None);
+    #[cfg(not(windows))]
+    {
+        Ok(None)
     }
-    let response_bytes =
-        match tokio::time::timeout(timeout_d, frame::read_message(&mut client.conn)).await {
-            Ok(Ok(b)) => b,
-            Ok(Err(err)) => {
-                warn!(?err, "observability metrics: read failed; local dump");
-                return Ok(None);
-            }
-            Err(_) => {
-                warn!("observability metrics: read timed out; local dump");
+
+    #[cfg(windows)]
+    {
+        // Build the client config. Missing env vars surface as a structured
+        // error → fall back to local (the standalone dump is root-independent,
+        // REQ-OBS-007 / D7).
+        let config = match ClientConfig::from_env() {
+            Ok(c) => c,
+            Err(err) => {
+                warn!(
+                    tier = "client_config",
+                    ?err,
+                    "observability metrics: falling back to local dump"
+                );
                 return Ok(None);
             }
         };
-    let response: Value = match serde_json::from_slice(&response_bytes) {
-        Ok(v) => v,
-        Err(err) => {
-            warn!(
-                ?err,
-                "observability metrics: response is not valid JSON; local dump"
-            );
+        // Connect. No live daemon → local dump, NEVER auto-spawn
+        // (REQ-DAEMON-010).
+        let mut client = match DaemonClient::connect(&config).await {
+            Ok(c) => c,
+            Err(DaemonError::PipeNotFound(_))
+            | Err(DaemonError::Timeout(_))
+            | Err(DaemonError::CookieMissing(_)) => {
+                warn!("observability metrics: no live daemon; local dump");
+                return Ok(None);
+            }
+            Err(err) => {
+                warn!(?err, "observability metrics: connect failed; local dump");
+                return Ok(None);
+            }
+        };
+        // Send `sys.metrics`. Wire shape:
+        //   {"kind":"sys","command":"metrics"} → framed bytes
+        let request = json!({
+            "kind": "sys",
+            "command": SysCommand::Metrics,
+        });
+        let request_bytes = serde_json::to_vec(&request).map_err(|err| DomainError::Internal {
+            message: format!("serializing sys.metrics request: {err}"),
+        })?;
+        // Frame::write_message is provided by memento-mcp::frame.
+        let timeout_d = config.pipe_timeout;
+        let write_result = tokio::time::timeout(
+            timeout_d,
+            frame::write_message(&mut client.conn, &request_bytes),
+        )
+        .await
+        .map_err(|_| DomainError::Internal {
+            message: format!("sys.metrics request write timed out after {timeout_d:?}"),
+        })?;
+        if let Err(err) = write_result {
+            warn!(?err, "observability metrics: write failed; local dump");
             return Ok(None);
         }
-    };
-    let body = response
-        .get("body")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    Ok(body)
+        let response_bytes =
+            match tokio::time::timeout(timeout_d, frame::read_message(&mut client.conn)).await {
+                Ok(Ok(b)) => b,
+                Ok(Err(err)) => {
+                    warn!(?err, "observability metrics: read failed; local dump");
+                    return Ok(None);
+                }
+                Err(_) => {
+                    warn!("observability metrics: read timed out; local dump");
+                    return Ok(None);
+                }
+            };
+        let response: Value = match serde_json::from_slice(&response_bytes) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    "observability metrics: response is not valid JSON; local dump"
+                );
+                return Ok(None);
+            }
+        };
+        let body = response
+            .get("body")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Ok(body)
+    }
 }
 
 /// `observability metrics`: render the registry as Prometheus text to
@@ -203,7 +217,15 @@ mod tests {
     //! the wire).
 
     use super::*;
+    #[cfg(windows)]
     use memento_mcp::dispatcher::Command as DispatchCommand;
+    #[cfg(windows)]
+    use memento_mcp::dispatcher::SysCommand;
+    #[cfg(windows)]
+    use memento_mcp::frame;
+    #[cfg(windows)]
+    use serde_json::{Value, json};
+    #[cfg(windows)]
     use tokio::io::duplex;
 
     fn matches_metrics() -> ArgMatches {
@@ -256,6 +278,7 @@ mod tests {
     /// shape matches the dispatcher's `sys.metrics` body (the daemon
     /// side at `memento-mcp::dispatcher::sys_metrics`).
     #[test]
+    #[cfg(windows)]
     fn sys_metrics_request_envelope_shape() {
         let req = json!({
             "kind": "sys",
@@ -275,6 +298,7 @@ mod tests {
     /// roundtrip cleanly. Locks the framing (u32 header + ≤ 2 KiB
     /// payload) the daemon path depends on.
     #[tokio::test]
+    #[cfg(windows)]
     async fn sys_metrics_roundtrip_over_duplex() {
         let (mut a, mut b) = duplex(64 * 1024);
         let request = json!({

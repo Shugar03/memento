@@ -730,6 +730,74 @@ pub(crate) mod test_util {
             memento_domain::AgentId::new("test-agent"),
         )
     }
+
+    /// A context for a DIFFERENT tenant (defense-in-depth guard tests).
+    pub(crate) fn foreign_tenant_ctx(ts: &TempStore) -> TenantContext {
+        memento_domain::TenantContext::new_for_tests(
+            memento_domain::TenantId::new(),
+            *ts.workspace_id(),
+            memento_domain::AgentId::new("test-agent"),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tenant_guard_tests {
+    use super::test_util::{foreign_tenant_ctx, test_app};
+    use memento_domain::ChunkId;
+    use memento_ports::{DeleteScope, IngestTextRequest, SearchQuery};
+    use memento_testkit::{TempStore, TestClock};
+
+    #[tokio::test]
+    async fn foreign_tenant_context_is_rejected_on_hot_paths() {
+        let ts = TempStore::new();
+        let app = test_app(&ts, TestClock::default()).await;
+        let foreign = foreign_tenant_ctx(&ts);
+        assert_ne!(foreign.tenant_id(), ts.tenant_id());
+
+        let ingest_err = app
+            .ingest_text(
+                &foreign,
+                IngestTextRequest {
+                    text: "forbidden".into(),
+                    doc_id: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .expect_err("ingest forbidden");
+        assert_eq!(ingest_err.code(), "TENANT_FORBIDDEN");
+
+        let search_err = app
+            .search(
+                &foreign,
+                SearchQuery::new("forbidden", 5, *ts.workspace_id()),
+            )
+            .await
+            .expect_err("search forbidden");
+        assert_eq!(search_err.code(), "TENANT_FORBIDDEN");
+
+        let delete_err = app
+            .delete(&foreign, DeleteScope::Chunk { id: ChunkId::new() })
+            .await
+            .expect_err("delete forbidden");
+        assert_eq!(delete_err.code(), "TENANT_FORBIDDEN");
+
+        let feedback_err = app
+            .feedback(&foreign, ChunkId::new(), true, None)
+            .await
+            .expect_err("feedback forbidden");
+        assert_eq!(feedback_err.code(), "TENANT_FORBIDDEN");
+
+        let fit_err = app
+            .context_fit(
+                &foreign,
+                crate::context_fit::ContextFitRequest::new("forbidden", 100, 5, *ts.workspace_id()),
+            )
+            .await
+            .expect_err("context_fit forbidden");
+        assert_eq!(fit_err.code(), "TENANT_FORBIDDEN");
+    }
 }
 
 #[cfg(test)]

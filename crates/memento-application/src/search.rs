@@ -57,10 +57,12 @@ impl AppService {
         ctx: &TenantContext,
         query: SearchQuery,
     ) -> Result<Vec<SearchHit>, DomainError> {
+        self.ensure_bound_tenant(ctx)?;
         // REQ-OBS-003: the search span carries tenant/agent/workspace and an
         // empty chore_id slot (a search has no chore id → omitted, never
         // faked). No-op without a subscriber (REQ-OBS-004).
         let span = crate::search_span(ctx, query.workspace_id);
+        let query_len = query.query.len();
         async {
             if query.rerank && !query.rrf_enabled {
                 // A1 scope: rerank post-processes the RRF fusion (top-10 → top-5).
@@ -94,18 +96,30 @@ impl AppService {
             // (hit count + mode flags), outcome ok|error with the stable
             // error code. No-op without a sink.
             match &result {
-                Ok(hits) => self.record_event(
-                    Some(ctx.agent_id()),
-                    "search",
-                    serde_json::json!({
-                        "hits": hits.len(),
-                        "rrf": rrf_enabled,
-                        "rerank": rerank,
-                    }),
-                    "ok",
-                    None,
-                    None,
-                ),
+                Ok(hits) => {
+                    self.record_audit(
+                        ctx,
+                        "search",
+                        serde_json::json!({
+                            "query_len": query_len,
+                            "hits": hits.len(),
+                            "hybrid": rrf_enabled,
+                        }),
+                        None,
+                    );
+                    self.record_event(
+                        Some(ctx.agent_id()),
+                        "search",
+                        serde_json::json!({
+                            "hits": hits.len(),
+                            "rrf": rrf_enabled,
+                            "rerank": rerank,
+                        }),
+                        "ok",
+                        None,
+                        None,
+                    );
+                }
                 Err(err) => self.record_event(
                     Some(ctx.agent_id()),
                     "search",
@@ -324,6 +338,7 @@ impl AppService {
         ctx: &TenantContext,
         id: &ChunkId,
     ) -> Result<Option<MemoryChunk>, DomainError> {
+        self.ensure_bound_tenant(ctx)?;
         self.store.get_chunk(ctx, id).await
     }
 }
@@ -377,6 +392,35 @@ mod tests {
         .await
         .expect("doc b");
         app
+    }
+
+    #[tokio::test]
+    async fn search_is_audited_with_query_len_not_query_text() {
+        // REQ-CG-003: search emits {query_len, hits, hybrid} — never query text.
+        let ts = TempStore::new();
+        let app = corpus_app(&ts).await;
+        let secret_query = "memoria río texto-secreto-de-busqueda";
+        let q = SearchQuery::new(secret_query, 10, *ts.workspace_id());
+
+        app.search(&ts.ctx(), q).await.expect("search ok");
+
+        let raw = std::fs::read_to_string(app.audit_log_path()).expect("audit file");
+        let search_line = raw
+            .lines()
+            .find(|l| l.contains("\"action\":\"search\""))
+            .expect("search audited");
+        let v: serde_json::Value = serde_json::from_str(search_line).unwrap();
+        assert_eq!(v["target"]["query_len"], secret_query.len());
+        assert!(v["target"]["hits"].as_u64().unwrap() >= 1);
+        assert_eq!(v["target"]["hybrid"], false);
+        assert!(
+            !search_line.contains("texto-secreto-de-busqueda"),
+            "query text must not appear in audit: {search_line}"
+        );
+        assert!(
+            !search_line.contains(secret_query),
+            "full query must not appear in audit"
+        );
     }
 
     #[tokio::test]

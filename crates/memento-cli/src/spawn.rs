@@ -28,16 +28,18 @@
 //! whole point of the daemon is that the CLI process stays thin
 //! (REQ-DAEMON-001/007).
 
+#![cfg(windows)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use memento_domain::TenantId;
-use memento_mcp::daemon::pipe_name;
 use memento_mcp::dispatcher::{Command as DispatchCommand, SysCommand};
 use memento_mcp::frame;
 use memento_mcp::job::StartupJob;
+use memento_mcp::pipe_name;
 use thiserror::Error;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -451,7 +453,7 @@ impl Drop for SpawnLockGuard {
 /// AppService model load on this path — REQ-DAEMON-007).
 async fn send_sys_shutdown(root: &Path, grace: Duration) -> Result<(), SpawnError> {
     use interprocess::os::windows::named_pipe::tokio::PipeStream;
-    use memento_mcp::daemon::DEFAULT_PIPE_TIMEOUT;
+    use memento_mcp::DEFAULT_PIPE_TIMEOUT;
     use memento_mcp::handshake::{Hello, PROTOCOL_VERSION, Role, Welcome};
     use tokio::io::AsyncReadExt;
 

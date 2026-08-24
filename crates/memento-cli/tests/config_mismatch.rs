@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! `CONFIG_MISMATCH` refusal tests (REQ-DAEMON-003, design R3).
 //!
 //! The daemon's spawn config (`--locale`, `--no-embeddings`) is FIXED at

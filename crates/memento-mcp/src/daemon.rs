@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! Daemon pipe service (REQ-DAEMON-005/006/012, design D2/D3/D5).
 //!
 //! One [`DaemonPipe`] per (root, tenant) listens on the hashed pipe name
@@ -16,6 +17,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::frame;
+use crate::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
+use crate::pipe_naming::{DEFAULT_PIPE_TIMEOUT, pipe_name};
 use interprocess::os::windows::named_pipe::{
     PipeListenerOptions, pipe_mode,
     tokio::{PipeListener, PipeStream},
@@ -23,13 +27,8 @@ use interprocess::os::windows::named_pipe::{
 use memento_application::audit::AuditLogger;
 use memento_domain::{DomainError, TenantContext, TenantId};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
-use crate::frame;
-use crate::handshake::{Capability, Hello, PROTOCOL_VERSION, SpawnConfig, Welcome};
-
-/// Default bound on daemon writes to a stalled client (S2.5).
-pub const DEFAULT_PIPE_TIMEOUT: Duration = Duration::from_secs(5);
+pub use crate::pipe_naming::DEFAULT_PIPE_TIMEOUT;
 
 /// `MEMENTO_DAEMON_PIPE_TIMEOUT`: seconds a daemon write may block on a
 /// non-draining client before the request fails (REQ-DAEMON-006). Overridable
@@ -43,21 +42,7 @@ pub fn pipe_timeout() -> Duration {
         .unwrap_or(DEFAULT_PIPE_TIMEOUT)
 }
 
-/// The deterministic pipe name for a (root, tenant) pair (D5):
-/// `\\.\pipe\memento-<sha256(canonical root)[0..16]>-<tenant_id>`. The token
-/// never appears in the name (D4). Root is canonicalized when possible so
-/// two spellings of the same path resolve to the same daemon.
-pub fn pipe_name(root: &Path, tenant_id: &TenantId) -> String {
-    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.to_string_lossy().as_bytes());
-    let digest = hasher.finalize();
-    let mut hex16 = String::with_capacity(16);
-    for byte in digest.iter().take(8) {
-        hex16.push_str(&format!("{byte:02x}"));
-    }
-    format!(r"\\.\pipe\memento-{hex16}-{tenant_id}")
-}
+pub use crate::pipe_naming::pipe_name;
 
 /// Everything the daemon-side handshake needs to authenticate one client.
 #[derive(Debug, Clone)]

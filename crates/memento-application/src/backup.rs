@@ -284,7 +284,7 @@ pub async fn restore_backup(
 
 // --- crypto + archive internals -------------------------------------------------
 
-/// Load `keys/master.key` or create it with 32 OS-random bytes.
+/// Load `keys/master.key` or create it with 32 OS-random bytes (mode 0600).
 fn load_or_create_master_key(path: &Path) -> Result<Vec<u8>, DomainError> {
     if let Ok(existing) = std::fs::read(path) {
         if existing.len() == KEY_BYTES {
@@ -295,11 +295,37 @@ fn load_or_create_master_key(path: &Path) -> Result<Vec<u8>, DomainError> {
         });
     }
     let key = random_bytes(KEY_BYTES)?;
+    write_private_bytes(path, &key)?;
+    Ok(key)
+}
+
+/// Write bytes to `path` with owner-only permissions (0600 on Unix).
+fn write_private_bytes(path: &Path, contents: &[u8]) -> Result<(), DomainError> {
+    use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, &key)?;
-    Ok(key)
+    let tmp = path.with_extension("key.tmp");
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        set_private_perms(&file)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_perms(file: &std::fs::File) -> Result<(), DomainError> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(DomainError::from)
+}
+
+#[cfg(not(unix))]
+fn set_private_perms(_file: &std::fs::File) -> Result<(), DomainError> {
+    Ok(())
 }
 
 /// Tar the tenant's data dirs + manifest (keys/ deliberately excluded).
@@ -601,5 +627,25 @@ mod tests {
         let master = app.tenant_dir().join("keys").join("master.key");
         assert!(master.exists());
         assert_eq!(std::fs::read(&master).unwrap().len(), 32);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn master_key_is_created_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let ts = TempStore::new();
+        let app = test_app(&ts, TestClock::default()).await;
+        app.backup(&ts.ctx())
+            .await
+            .expect("backup creates master key");
+
+        let master = app.tenant_dir().join("keys").join("master.key");
+        let mode = std::fs::metadata(&master)
+            .expect("master key exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "master.key must be owner-read/write only");
     }
 }

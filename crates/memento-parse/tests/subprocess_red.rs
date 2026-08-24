@@ -60,6 +60,30 @@ fn assert_argv_rejected(err: &DomainError) {
     assert_eq!(err.exit_code(), 32);
 }
 
+/// Parent secrets must not leak into the anydoc child via inherited env (TB-5).
+#[tokio::test]
+async fn parent_env_secrets_not_inherited() {
+    let staging = TempDir::new().expect("tempdir");
+    let client = fake_client("env-probe", Duration::from_secs(5), 1024 * 1024, &staging);
+    // SAFETY: test-only env mutation; serialized by the single-threaded test runner.
+    unsafe { std::env::set_var("MEMENTO_TOKEN", "memo_test_secret_leak_probe") };
+    let result = client.convert(b"payload", "pdf").await;
+    // SAFETY: test-only env cleanup.
+    unsafe { std::env::remove_var("MEMENTO_TOKEN") };
+
+    let converted = result.expect("env-probe conversion ok");
+    assert!(
+        !converted.markdown.contains("ENV_PROBE_TOKEN=true"),
+        "MEMENTO_TOKEN leaked to subprocess env: {}",
+        converted.markdown
+    );
+    assert!(
+        converted.markdown.contains("ENV_PROBE_TOKEN=false"),
+        "expected sanitized env probe marker: {}",
+        converted.markdown
+    );
+}
+
 /// Threat matrix row 1 (adapted): path traversal must be rejected before the
 /// extension ever reaches a staging path or the subprocess command line.
 #[tokio::test]

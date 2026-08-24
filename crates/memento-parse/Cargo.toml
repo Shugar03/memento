@@ -19,7 +19,7 @@ uuid.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
-memento-testkit = { path = "../memento-testkit" }
+memento-testkit = { path = "../memento-testkit", default-features = false }
 
 # Dev-only test double for the anydoc CLI (T-031): integration tests locate
 # it via env!("CARGO_BIN_EXE_memento_parse_fake_anydoc"). Never shipped.

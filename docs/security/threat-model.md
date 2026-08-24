@@ -96,7 +96,7 @@ risk that survives for the external audit to weigh.
 | Audit log leaks content / credentials / keys | TB-2 | `AuditEvent::target` carries ids/counts only; the no-secrets scan (`crates/memento-application/tests/audit_nosecrets.rs`) plants strings from every content surface and asserts none appear in any line. | None known. |
 | Master key on disk in plaintext | TB-4 | `db/tenants/<tid>/keys/master.key` is wrapped per-backup; raw key material only lives in memory during a backup or restore. | Hostile process with read access to `<root>` can copy the master key. **Documented as MVP limitation — disk encryption is the operational answer.** |
 | Backup cipher key on disk in plaintext | TB-4 | Per-backup AES-256-GCM key is wrapped by the master key (`backup.key.json`); the unwrapped form exists only during `tenant restore`. | Same as master key. |
-| anydoc subprocess exfiltrates via stderr / env | TB-5 | 64 KiB stderr cap + kill-on-cap; env is NOT inherited (`std::env::remove_var` clears, then a fixed allowlist is set; see `memento-parse/src/anydoc.rs`). | None known. |
+| anydoc subprocess exfiltrates via stderr / env | TB-5 | 64 KiB stderr cap + kill-on-cap; `env_clear()` + fixed allowlist (`PATH`, `HOME`/`SystemRoot`, …) before exec — see `memento-parse/src/anydoc.rs::SUBPROCESS_ENV_ALLOWLIST`. | None known. |
 | Embedding model first-run download leaks host fingerprint | TB-6 | Model is pinned (sha256 verified by HF cache); the only network call is to `huggingface.co` for the model + tokenizer. | First-run only; subsequent runs are offline. |
 
 ### D — Denial of service
@@ -159,3 +159,6 @@ What we expect the audit to challenge:
 - HMAC chaining on the audit log (tampering / repudiation rows).
 - Bulk-ingest in `--json` mode (no human in the loop).
 - Windowed chunking for the sub-quota-large doc case.
+- MCP `memory.delete` cannot perform GDPR erasure — tenant scope is
+  blocked; operators must use `memento tenant delete` (documented in
+  tool descriptions and threat-model §2 E).

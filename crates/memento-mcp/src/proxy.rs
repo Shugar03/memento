@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! MCP stdio → named-pipe proxy (design D1/D4, REQ-DAEMON-008).
 //!
 //! When a daemon is reachable for the MCP process's (root, tenant, spawn

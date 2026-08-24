@@ -128,6 +128,16 @@ async fn audit_lines_have_shape_and_never_carry_content_or_secrets() {
 
     // backup + export
     app.backup(&ts.ctx()).await.expect("backup");
+
+    // search (REQ-CG-003: audit carries query_len + hits, never query text)
+    let secret_query = format!("{PLANTED_CONTENT} busqueda auditada");
+    app.search(
+        &ts.ctx(),
+        memento_ports::SearchQuery::new(secret_query, 10, *ts.workspace_id()),
+    )
+    .await
+    .expect("search");
+
     app.export_tenant(&ts.ctx()).await.expect("export");
 
     // Capture the audit log BEFORE erase (T-120: erase removes the audit
@@ -204,6 +214,19 @@ async fn audit_lines_have_shape_and_never_carry_content_or_secrets() {
         .filter(|l| l.contains("\"action\":\"ingest\""))
         .collect();
     assert_eq!(ingest_lines.len(), 2, "text + document ingests audited");
+
+    // Search audit: query_len + hits, never the query text (REQ-CG-003).
+    let search_line = lines
+        .iter()
+        .find(|l| l.contains("\"action\":\"search\""))
+        .expect("search audited");
+    let search_v: serde_json::Value = serde_json::from_str(search_line).unwrap();
+    assert!(search_v["target"]["query_len"].is_number());
+    assert!(search_v["target"]["hits"].is_number());
+    assert!(
+        !search_line.contains(PLANTED_CONTENT),
+        "search query text leaked: {search_line}"
+    );
 }
 
 #[tokio::test]

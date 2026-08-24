@@ -263,7 +263,8 @@ pub fn es(key: StringKey) -> &'static str {
             "Registra retroalimentación (relevante / irrelevante) sobre un fragmento."
         }
         StringKey::McpToolDeleteDesc => {
-            "Elimina de forma permanente fragmentos, documentos, workspaces o el tenant."
+            "Elimina de forma permanente fragmentos, documentos o workspaces. \
+             El borrado GDPR del tenant requiere `memento tenant delete`."
         }
         StringKey::McpToolContextFitDesc => {
             "Selecciona los fragmentos que mejor caben en un presupuesto de tokens para contexto."
@@ -436,7 +437,8 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::McpToolGetChunkDesc => "Fetch a memory chunk by id with its full provenance.",
         StringKey::McpToolFeedbackDesc => "Record feedback (relevant / irrelevant) about a chunk.",
         StringKey::McpToolDeleteDesc => {
-            "Permanently delete chunks, documents, workspaces, or the tenant."
+            "Permanently delete chunks, documents, or workspaces. \
+             GDPR tenant erasure requires `memento tenant delete`."
         }
         StringKey::McpToolContextFitDesc => {
             "Pick the best-fitting chunks for a token budget (context packing)."
