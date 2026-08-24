@@ -995,10 +995,7 @@ mod tests {
         .expect("ingest into other ws");
 
         let hits_other = app
-            .search(
-                &ts.ctx(),
-                SearchQuery::new("secreto unico", 5, other),
-            )
+            .search(&ts.ctx(), SearchQuery::new("secreto unico", 5, other))
             .await
             .expect("search other");
         assert_eq!(hits_other.len(), 1);

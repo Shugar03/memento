@@ -268,15 +268,18 @@ impl McpServer {
         let filters = parse_search_filters(p.doc_id.as_deref(), p.source.as_deref())?;
         let hits = self
             .app
-            .search(&self.ctx, SearchQuery {
-                query: p.query,
-                top_k: top_k_or_default(p.top_k),
-                workspace_id,
-                rrf_enabled: p.rrf_enabled,
-                rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
-                rerank: p.rerank,
-                filters,
-            })
+            .search(
+                &self.ctx,
+                SearchQuery {
+                    query: p.query,
+                    top_k: top_k_or_default(p.top_k),
+                    workspace_id,
+                    rrf_enabled: p.rrf_enabled,
+                    rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
+                    rerank: p.rerank,
+                    filters,
+                },
+            )
             .await?;
         Ok(Json(SearchOutput {
             hits: hits.into_iter().map(hit_dto).collect(),
@@ -293,12 +296,15 @@ impl McpServer {
         let workspace_id = p.workspace_id.as_deref().map(parse_workspace).transpose()?;
         let result = self
             .app
-            .ingest_text(&self.ctx, IngestTextRequest {
-                text: p.text,
-                doc_id,
-                metadata: p.metadata.map(Metadata),
-                workspace_id,
-            })
+            .ingest_text(
+                &self.ctx,
+                IngestTextRequest {
+                    text: p.text,
+                    doc_id,
+                    metadata: p.metadata.map(Metadata),
+                    workspace_id,
+                },
+            )
             .await?;
         Ok(Json(ingest_output(result)))
     }
@@ -323,13 +329,16 @@ impl McpServer {
         let workspace_id = p.workspace_id.as_deref().map(parse_workspace).transpose()?;
         let result = self
             .app
-            .ingest_document(&self.ctx, IngestDocumentRequest {
-                blob,
-                source_hint,
-                doc_id,
-                metadata: p.metadata.map(Metadata),
-                workspace_id,
-            })
+            .ingest_document(
+                &self.ctx,
+                IngestDocumentRequest {
+                    blob,
+                    source_hint,
+                    doc_id,
+                    metadata: p.metadata.map(Metadata),
+                    workspace_id,
+                },
+            )
             .await?;
         Ok(Json(ingest_output(result)))
     }
@@ -432,14 +441,17 @@ impl McpServer {
         let workspace_id = parse_workspace(&p.workspace_id)?;
         let result = self
             .app
-            .context_fit(&self.ctx, ContextFitRequest {
-                query: p.query,
-                budget_tokens: p.budget_tokens,
-                workspace_id,
-                top_k: top_k_or_default(p.top_k),
-                rrf_enabled: p.rrf_enabled,
-                rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
-            })
+            .context_fit(
+                &self.ctx,
+                ContextFitRequest {
+                    query: p.query,
+                    budget_tokens: p.budget_tokens,
+                    workspace_id,
+                    top_k: top_k_or_default(p.top_k),
+                    rrf_enabled: p.rrf_enabled,
+                    rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
+                },
+            )
             .await?;
         Ok(Json(ContextFitOutput {
             chunks: result.chunks.into_iter().map(hit_dto).collect(),
@@ -511,15 +523,18 @@ pub(crate) async fn execute_search(
         })?;
     let workspace_id = parse_workspace(&p.workspace_id).map_err(|err| err.0)?;
     let hits = app
-        .search(ctx, SearchQuery {
-            query: p.query,
-            top_k: top_k_or_default(p.top_k),
-            workspace_id,
-            rrf_enabled: p.rrf_enabled,
-            rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
-            rerank: p.rerank,
-            filters: None,
-        })
+        .search(
+            ctx,
+            SearchQuery {
+                query: p.query,
+                top_k: top_k_or_default(p.top_k),
+                workspace_id,
+                rrf_enabled: p.rrf_enabled,
+                rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
+                rerank: p.rerank,
+                filters: None,
+            },
+        )
         .await?;
     Ok(serde_json::to_value(SearchOutput {
         hits: hits.into_iter().map(hit_dto).collect(),
