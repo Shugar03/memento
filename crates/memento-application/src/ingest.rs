@@ -613,12 +613,11 @@ mod tests {
             .ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
-
                     text,
                     doc_id: Some(DocId::new()),
                     metadata: None,
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect("ingest ok");
@@ -665,7 +664,6 @@ mod tests {
             .ingest_document(
                 &ts.ctx(),
                 IngestDocumentRequest {
-
                     blob: markdown.as_bytes().to_vec(),
                     source_hint: SourceKind::Markdown,
                     doc_id: None,
@@ -676,7 +674,7 @@ mod tests {
                             .clone(),
                     )),
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect("ingest ok");
@@ -708,13 +706,12 @@ mod tests {
             .ingest_document(
                 &ts.ctx(),
                 IngestDocumentRequest {
-
                     blob: b"corrupt".to_vec(),
                     source_hint: SourceKind::Document("docx".into()),
                     doc_id: None,
                     metadata: None,
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect_err("parse fails");
@@ -785,13 +782,12 @@ mod tests {
             .ingest_document(
                 &ts.ctx(),
                 IngestDocumentRequest {
-
                     blob,
                     source_hint: SourceKind::Markdown,
                     doc_id: None,
                     metadata: None,
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect_err("too big");

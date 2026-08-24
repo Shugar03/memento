@@ -45,12 +45,11 @@ fn bench_ingest(c: &mut Criterion) {
                 rt.block_on(app.ingest_text(
                     &ctx,
                     IngestTextRequest {
-
                         text,
                         doc_id: None,
                         metadata: None,
                         workspace_id: None,
-        },
+                    },
                 ))
             });
             let res = res.expect("gate ingest succeeds");
@@ -90,12 +89,11 @@ fn bench_ingest(c: &mut Criterion) {
                 let res = rt.block_on(app.ingest_text(
                     &ctx,
                     IngestTextRequest {
-
                         text,
                         doc_id: None,
                         metadata: None,
                         workspace_id: None,
-        },
+                    },
                 ));
                 std::hint::black_box(res.expect("ingest succeeds"));
             },

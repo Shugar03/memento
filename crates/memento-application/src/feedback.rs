@@ -94,12 +94,11 @@ mod tests {
             .ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
-
                     text: "la memoria es un río".into(),
                     doc_id: None,
                     metadata: None,
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect("ingest");
@@ -141,12 +140,11 @@ mod tests {
             .ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
-
                     text: "otra memoria más".into(),
                     doc_id: None,
                     metadata: None,
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect("ingest");
@@ -171,12 +169,11 @@ mod tests {
             .ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
-
                     text: "recuerdo persistente".into(),
                     doc_id: None,
                     metadata: None,
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect("ingest");

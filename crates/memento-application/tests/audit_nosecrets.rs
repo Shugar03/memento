@@ -80,19 +80,17 @@ async fn audit_lines_have_shape_and_never_carry_content_or_secrets() {
         .ingest_text(
             &ts.ctx(),
             IngestTextRequest {
-
                 text: format!("{PLANTED_CONTENT} y tambien {PLANTED_TOKEN}"),
                 doc_id: None,
                 metadata: None,
                 workspace_id: None,
-        },
+            },
         )
         .await
         .expect("ingest text");
     app.ingest_document(
         &ts.ctx(),
         IngestDocumentRequest {
-
             blob: PLANTED_DOC_CONTENT.as_bytes().to_vec(),
             source_hint: SourceKind::Markdown,
             doc_id: None,

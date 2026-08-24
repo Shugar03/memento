@@ -209,12 +209,11 @@ async fn cli_and_mcp_search_agree_over_one_daemon() {
         app.ingest_text(
             &store.ctx(),
             IngestTextRequest {
-
                 text: "dual carrier search over one shared daemon".into(),
                 doc_id: None,
                 metadata: None,
                 workspace_id: None,
-        },
+            },
         )
         .await
         .expect("seed ingest");

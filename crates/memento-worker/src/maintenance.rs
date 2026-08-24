@@ -209,12 +209,11 @@ mod tests {
             app.ingest_text(
                 &ts.ctx(),
                 IngestTextRequest {
-
                     text: text.to_string(),
                     doc_id: None,
                     metadata: None,
                     workspace_id: None,
-        },
+                },
             )
             .await
             .expect("ingest");
