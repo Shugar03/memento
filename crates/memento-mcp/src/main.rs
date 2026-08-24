@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use memento_i18n::Locale;
+#[cfg(windows)]
 use memento_mcp::proxy::{ProxyConfig, StdioProxy};
 use memento_mcp::{McpServer, StartupOptions};
 use rmcp::ServiceExt;
@@ -42,6 +43,7 @@ async fn main() -> ExitCode {
     // daemon is reachable; any failure to connect falls back to the
     // direct server (the proxy is an optimization, never a gate — except
     // that MEMENTO_NO_DAEMON=1 short-circuits it, REQ-DAEMON-004 parity).
+    #[cfg(windows)]
     if let Some(config) = ProxyConfig::from_env() {
         match StdioProxy::connect(&config).await {
             Ok(proxy) => return serve_proxy(proxy, &opts).await,
@@ -93,6 +95,7 @@ async fn serve_direct(opts: StartupOptions) -> ExitCode {
 
 /// Proxy carrier: thin rmcp client over the daemon's named pipe — this
 /// process opens NO AppService (REQ-DAEMON-001 GIVEN-2).
+#[cfg(windows)]
 async fn serve_proxy(proxy: StdioProxy, opts: &StartupOptions) -> ExitCode {
     tracing::info!(
         tenant = %proxy.welcome().tenant_id,

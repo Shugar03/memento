@@ -38,6 +38,12 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_STDOUT_LIMIT: usize = 50 * 1024 * 1024;
 /// Hard cap on stderr captured for error reporting (bounded diagnostics).
 pub const STDERR_LIMIT: usize = 64 * 1024;
+/// Parent env vars forwarded to the anydoc child after `env_clear()` (TB-5).
+/// Everything else — including `MEMENTO_TOKEN` — is stripped.
+#[cfg(windows)]
+const SUBPROCESS_ENV_ALLOWLIST: &[&str] = &["PATH", "PATHEXT", "SystemRoot", "SystemDrive"];
+#[cfg(not(windows))]
+const SUBPROCESS_ENV_ALLOWLIST: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL"];
 /// Extension allowlist rule: lowercase alphanumeric only, ≤ 8 chars.
 /// This is the argv-injection/traversal gate — the only user-controlled
 /// fragment that reaches the command line.
@@ -147,7 +153,13 @@ impl AnydocClient {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            .env_clear();
+        for key in SUBPROCESS_ENV_ALLOWLIST {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
         for (k, v) in &self.config.command.env {
             cmd.env(k, v);
         }

@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! MCP stdio → pipe proxy integration (design D1/D4/S4.5, REQ-DAEMON-008).
 //!
 //! The proxy is the piece that kills the double model load (REQ-DAEMON-001

@@ -225,6 +225,7 @@ mod imp {
 pub use imp::{StartupJob, is_process_alive, working_set_bytes};
 
 #[cfg(test)]
+#[cfg(windows)]
 mod tests {
     //! RED-first tests for REQ-DAEMON-003 GIVEN-3 (orphan guard):
     //! `KILL_ON_JOB_CLOSE` must terminate the assigned child when the last

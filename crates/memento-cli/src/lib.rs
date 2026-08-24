@@ -36,6 +36,11 @@
 pub mod args;
 pub mod commands;
 pub mod output;
+#[cfg(windows)]
+#[path = "spawn.rs"]
+pub mod spawn;
+#[cfg(not(windows))]
+#[path = "spawn_stub.rs"]
 pub mod spawn;
 pub mod startup;
 pub mod transport;

@@ -113,6 +113,7 @@ async fn spawner_picks_newest_cookie_among_many() {
 }
 
 #[tokio::test]
+#[cfg(windows)]
 async fn spawner_ignores_dead_pid_cookies() {
     // REQ-DAEMON-013 kill -9 recovery: only a LIVE pid proves a daemon
     // is running. A cookie whose pid does not exist must be treated as

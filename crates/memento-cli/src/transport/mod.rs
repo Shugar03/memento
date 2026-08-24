@@ -11,6 +11,10 @@
 //! `memento-mcp` — the same `interprocess` crate, same codec, same HELLO,
 //! same `\\.\pipe\memento-<root-hash>-<tenant>` name derivation.
 
+#[cfg(windows)]
+pub mod pipe_client;
+#[cfg(not(windows))]
+#[path = "pipe_client_stub.rs"]
 pub mod pipe_client;
 
 pub use pipe_client::{DaemonClient, DaemonError};

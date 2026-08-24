@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! `daemon-persistent` integration: 2 concurrent clients over one
 //! shared daemon (REQ-DAEMON-008, design D2/D5/R1).
 //!

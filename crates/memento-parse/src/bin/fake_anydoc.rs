@@ -42,6 +42,13 @@ fn main() {
             eprintln!("fake anydoc: unsupported or corrupt document");
             exit(3);
         }
+        "env-probe" => {
+            // Test-only: report whether parent secrets leaked into the child env.
+            let has_token = std::env::var("MEMENTO_TOKEN").is_ok();
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "ENV_PROBE_TOKEN={has_token}");
+            out.flush().expect("flush stdout");
+        }
         _ => {
             // echo: mimic `anydoc <input>` → Markdown on stdout.
             let input = input.expect("fake anydoc: input path required");

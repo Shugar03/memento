@@ -20,7 +20,6 @@ chrono.workspace = true
 # daemon transport (daemon-persistent): named pipes + Job Objects + pipe-name
 # hashing (REQ-DAEMON-006/003/012).
 interprocess.workspace = true
-windows.workspace = true
 sha2.workspace = true
 rand.workspace = true
 rand_core.workspace = true
@@ -35,13 +34,20 @@ memento-embed-fastembed = { path = "../memento-embed-fastembed" }
 # shared stderr tracing subscriber (REQ-OBS-002, design D4).
 memento-observability = { path = "../memento-observability" }
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
+] }
+
 [dev-dependencies]
 tempfile.workspace = true
-memento-testkit = { path = "../memento-testkit" }
+memento-testkit = { path = "../memento-testkit", default-features = false }
 memento-okf = { path = "../memento-okf" }
-# daemon-persistent B7: pipe client transport for the concurrent-client
-# integration test (REQ-DAEMON-008).
-memento-cli = { path = "../memento-cli" }
 
 [[bin]]
 name = "memento-mcp-server"

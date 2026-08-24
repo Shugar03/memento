@@ -167,17 +167,6 @@ tower = "0.5"
 # Windows named pipes (tokio duplex). windows-sys 0.61 is already in the
 # tree via sysinfo — zero new transitive deps (explore verified).
 interprocess = { version = "2.4.3", features = ["tokio"] }
-# Job Objects (KILL_ON_JOB_CLOSE / BREAKAWAY_OK, REQ-DAEMON-003) + owner-only
-# security descriptors (REQ-DAEMON-012) + FILE_SHARE_NONE spawn lock (D6).
-# The crate is already in the tree via sysinfo 0.39 (0.62.2 in Cargo.lock).
-windows = { version = "0.62.2", features = [
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_ProcessStatus",
-] }
 
 # --- dev ---
 tempfile = "3.27"

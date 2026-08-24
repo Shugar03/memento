@@ -26,6 +26,7 @@ impl AppService {
         useful: bool,
         reason: Option<String>,
     ) -> Result<(), DomainError> {
+        self.ensure_bound_tenant(ctx)?;
         // REQ-ML-001: feedback on an unknown chunk is a structured error.
         // The lookup is tenant-scoped, so a foreign id resolves to None.
         if self.store.get_chunk(ctx, &chunk_id).await?.is_none() {

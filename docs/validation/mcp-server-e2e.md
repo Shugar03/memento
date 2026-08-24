@@ -124,7 +124,7 @@ against some Rust source — out of scope for this validation.
 | (b) | `memory.get_chunk` with id `00000000-...-000` | (no error) | 5.2 ms | Clean `{"chunk": null}` — REQ-MR-005 "unknown ids resolve to null, never an error" |
 | (c) | `memory.feedback` with unknown chunk id | `CHUNK_NOT_FOUND` | 3.4 ms | Tool-level error, message_es `"El fragmento solicitado no existe."`, message_en `"The requested chunk does not exist."` |
 | (d) | `memory.delete` with `scope="chunk"`, no `id` | `INVALID_INPUT` | 1.0 ms | Detail: `"delete scope 'chunk' requires an id"` |
-| (e) | `memory.delete` with `scope="bogus"` | `INVALID_INPUT` | 0.6 ms | Detail: `"scope must be one of 'chunk', 'doc', 'workspace', 'tenant', got: bogus"` |
+| (e) | `memory.delete` with `scope="bogus"` | `INVALID_INPUT` | 0.6 ms | Detail: `"scope must be one of 'chunk', 'doc', 'workspace', got: bogus"` (tenant purge requires `memento tenant delete`) |
 | (f) | `memory.search` with `query=""` | (no error) | 0.6 ms | `{"hits":[]}` — BM25 returns empty for empty query, never errors. (No empty-query rejection in the spec.) |
 | (g) | `code.symbol_lookup` with unknown project id | `NOT_FOUND` | 0.6 ms | Bilingual REQ-CK-003 shape |
 | (h) | `tools/call` for non-existent tool `memory.nonexistent` | protocol-level `-32602` | 0.9 ms | rmcp rejects unknown tool names BEFORE the tool router sees them; the JSON-RPC error code is `tool not found`, payload `null`. The session survives. |

@@ -95,6 +95,7 @@ impl AppService {
         ctx: &TenantContext,
         req: IngestTextRequest,
     ) -> Result<IngestResult, DomainError> {
+        self.ensure_bound_tenant(ctx)?;
         // REQ-OBS-003: the ingest span carries the tenant/agent/workspace
         // context; the chore_id slot opens empty and is recorded as soon as
         // the id exists (record-if-Some, never "None").
@@ -183,6 +184,7 @@ impl AppService {
         ctx: &TenantContext,
         req: IngestDocumentRequest,
     ) -> Result<IngestResult, DomainError> {
+        self.ensure_bound_tenant(ctx)?;
         // REQ-OBS-003: same span contract as ingest_text — the chore id is
         // recorded as soon as it exists.
         let span = crate::ingest_span(ctx, *ctx.workspace_id());

@@ -10,8 +10,8 @@ use memento_application::AppService;
 use memento_application::context_fit::ContextFitRequest;
 use memento_domain::{ChunkId, DocId, DomainError, SourceKind, WorkspaceId};
 use memento_ports::{
-    DeleteScope, IngestDocumentRequest, IngestResult, IngestTextRequest, Metadata, SearchHit,
-    SearchQuery,
+    DeleteScope, IngestDocumentRequest, IngestResult, IngestTextRequest, Metadata, SearchFilters,
+    SearchHit, SearchQuery,
 };
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::tool;
@@ -72,6 +72,27 @@ fn parse_source(raw: &str) -> Result<SourceKind, ToolError> {
                     ),
                 })
             }),
+    }
+}
+
+fn parse_search_filters(
+    doc_id: Option<&str>,
+    source: Option<&str>,
+) -> Result<Option<SearchFilters>, ToolError> {
+    let doc_id = doc_id
+        .map(|raw| {
+            DocId::from_str(raw).map_err(|_| {
+                ToolError(DomainError::InvalidInput {
+                    message: format!("doc_id is not a valid uuid: {raw}"),
+                })
+            })
+        })
+        .transpose()?;
+    let source = source.map(parse_source).transpose()?;
+    if doc_id.is_none() && source.is_none() {
+        Ok(None)
+    } else {
+        Ok(Some(SearchFilters { doc_id, source }))
     }
 }
 
@@ -161,6 +182,12 @@ struct SearchParams {
     /// kept. Off by default.
     #[serde(default)]
     rerank: bool,
+    /// Restrict hits to a single document id (optional).
+    #[serde(default)]
+    doc_id: Option<String>,
+    /// Restrict hits to a source kind: "text", "markdown", or "document:<ext>".
+    #[serde(default)]
+    source: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -199,7 +226,7 @@ struct FeedbackParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct DeleteParams {
-    /// "chunk" | "doc" | "workspace" | "tenant".
+    /// "chunk" | "doc" | "workspace" (tenant erasure is CLI-only — GDPR).
     scope: String,
     #[serde(default)]
     id: Option<String>,
@@ -232,6 +259,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<Json<SearchOutput>, ToolError> {
         let workspace_id = parse_workspace(&p.workspace_id)?;
+        let filters = parse_search_filters(p.doc_id.as_deref(), p.source.as_deref())?;
         let hits = self
             .app
             .search(
@@ -243,7 +271,7 @@ impl McpServer {
                     rrf_enabled: p.rrf_enabled,
                     rrf_k: p.rrf_k.unwrap_or(memento_ports::DEFAULT_RRF_K),
                     rerank: p.rerank,
-                    filters: None,
+                    filters,
                 },
             )
             .await?;
@@ -333,13 +361,21 @@ impl McpServer {
         Ok(Json(OkOutput { ok: true }))
     }
 
-    /// memory.delete — hard delete by scope (REQ-ML-002): chunk, doc,
-    /// workspace, or the whole tenant.
+    /// memory.delete — hard delete by scope (REQ-ML-002): chunk, doc, or
+    /// workspace. Tenant GDPR erasure is CLI-only (`memento tenant delete`).
     #[tool(name = "memory.delete")]
     async fn memory_delete(
         &self,
         Parameters(p): Parameters<DeleteParams>,
     ) -> Result<Json<DeleteOutput>, ToolError> {
+        if p.scope == "tenant" {
+            return Err(ToolError(DomainError::InvalidInput {
+                message: "tenant delete is not available via MCP: use \
+                    `memento tenant delete` for GDPR erasure (destroys keys, \
+                    credentials, and audit log)"
+                    .into(),
+            }));
+        }
         let scope = match p.scope.as_str() {
             "chunk" => {
                 let id = p.id.as_deref().ok_or_else(|| {
@@ -369,23 +405,10 @@ impl McpServer {
                     id: parse_workspace(id)?,
                 }
             }
-            "tenant" => {
-                // Only the bound tenant can be erased from this process
-                // (REQ-TA-001/002): absent id → the bound tenant.
-                let id = match p.id.as_deref() {
-                    Some(raw) => memento_domain::TenantId::from_str(raw).map_err(|_| {
-                        ToolError(DomainError::InvalidInput {
-                            message: format!("tenant id is not a valid uuid: {raw}"),
-                        })
-                    })?,
-                    None => *self.ctx.tenant_id(),
-                };
-                DeleteScope::Tenant { id }
-            }
             other => {
                 return Err(ToolError(DomainError::InvalidInput {
                     message: format!(
-                        "scope must be one of 'chunk', 'doc', 'workspace', 'tenant', got: {other}"
+                        "scope must be one of 'chunk', 'doc', 'workspace', got: {other}"
                     ),
                 }));
             }
@@ -579,6 +602,82 @@ mod tests {
             .map(|t| t.text.clone())
             .expect("text block");
         serde_json::from_str(&text).expect("tool output is JSON")
+    }
+
+    #[tokio::test]
+    async fn memory_delete_tenant_scope_is_blocked_use_cli_erase() {
+        // GDPR erase requires the CLI ceremony — MCP must not purge a tenant.
+        let ts = TempStore::new();
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+
+        let err = client
+            .call_tool(call("memory.delete", json!({ "scope": "tenant" })))
+            .await
+            .expect("tool call returns");
+        assert_eq!(err.is_error, Some(true), "tenant delete must fail");
+        let payload: Value = serde_json::from_str(
+            &err.content
+                .iter()
+                .find_map(|b| b.as_text())
+                .map(|t| t.text.clone())
+                .expect("error text"),
+        )
+        .expect("structured error JSON");
+        assert_eq!(payload["code"], "INVALID_INPUT");
+        assert!(
+            payload["detail"]
+                .as_str()
+                .unwrap()
+                .contains("tenant delete"),
+            "error must point to CLI erase: {}",
+            payload["detail"]
+        );
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn memory_search_filters_by_doc_id() {
+        let ts = TempStore::new();
+        let server = test_server(&ts).await;
+        let (client, task) = pair(server).await;
+        let ws = ts.workspace_id().to_string();
+
+        let ingest_a = client
+            .call_tool(call(
+                "memory.ingest_text",
+                json!({ "text": "alpha memoria filtrada uno" }),
+            ))
+            .await
+            .expect("ingest a");
+        let doc_a = text_of(&ingest_a)["doc_id"].as_str().unwrap().to_string();
+
+        let _ = client
+            .call_tool(call(
+                "memory.ingest_text",
+                json!({ "text": "beta memoria filtrada dos" }),
+            ))
+            .await
+            .expect("ingest b");
+
+        let filtered = client
+            .call_tool(call(
+                "memory.search",
+                json!({
+                    "query": "memoria filtrada",
+                    "workspace_id": ws,
+                    "doc_id": doc_a,
+                }),
+            ))
+            .await
+            .expect("filtered search");
+        let filtered_json = text_of(&filtered);
+        let hits = filtered_json["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "doc_id filter narrows to one document");
+        assert_eq!(hits[0]["provenance"]["doc_id"], doc_a);
+
+        task.abort();
     }
 
     #[tokio::test]

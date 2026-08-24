@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! `memento observability metrics` daemon-mode tests (REQ-DAEMON-010,
 //! design R5).
 //!

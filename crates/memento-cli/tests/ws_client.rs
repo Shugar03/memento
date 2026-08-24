@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! REQ-DAEMON-001 acceptance: the CLI client working set stays ≤ 150 MB
 //! while the daemon serves it (the client is a thin pipe client — it never
 //! opens `AppService` and never loads the embedder; the daemon is the sole

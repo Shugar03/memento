@@ -19,13 +19,19 @@
 
 use clap::ArgMatches;
 use memento_domain::DomainError;
+#[cfg(windows)]
 use memento_mcp::dispatcher::SysCommand;
+#[cfg(windows)]
 use memento_mcp::frame;
+#[cfg(windows)]
 use serde_json::{Value, json};
 use std::path::PathBuf;
+#[cfg(windows)]
 use tracing::warn;
 
-use crate::transport::pipe_client::{ClientConfig, DaemonClient, DaemonError, NO_DAEMON_ENV};
+use crate::transport::pipe_client::NO_DAEMON_ENV;
+#[cfg(windows)]
+use crate::transport::pipe_client::{ClientConfig, DaemonClient, DaemonError};
 
 /// The dump destination override (REQ-OBS-007): `MEMENTO_METRICS_FILE` when
 /// set, stdout otherwise.
@@ -58,6 +64,13 @@ fn emit(body: String) -> Result<(), DomainError> {
 /// `sys.metrics`, extract the rendered body. Any failure along the way
 /// falls back to the local dump (see module docs).
 async fn try_daemon_metrics() -> Result<Option<String>, DomainError> {
+    #[cfg(not(windows))]
+    {
+        return Ok(None);
+    }
+
+    #[cfg(windows)]
+    {
     // Build the client config. Missing env vars surface as a structured
     // error → fall back to local (the standalone dump is root-independent,
     // REQ-OBS-007 / D7).
@@ -137,6 +150,7 @@ async fn try_daemon_metrics() -> Result<Option<String>, DomainError> {
         .and_then(Value::as_str)
         .map(str::to_string);
     Ok(body)
+    }
 }
 
 /// `observability metrics`: render the registry as Prometheus text to
@@ -203,7 +217,15 @@ mod tests {
     //! the wire).
 
     use super::*;
+    #[cfg(windows)]
     use memento_mcp::dispatcher::Command as DispatchCommand;
+    #[cfg(windows)]
+    use memento_mcp::dispatcher::SysCommand;
+    #[cfg(windows)]
+    use memento_mcp::frame;
+    #[cfg(windows)]
+    use serde_json::{Value, json};
+    #[cfg(windows)]
     use tokio::io::duplex;
 
     fn matches_metrics() -> ArgMatches {
@@ -256,6 +278,7 @@ mod tests {
     /// shape matches the dispatcher's `sys.metrics` body (the daemon
     /// side at `memento-mcp::dispatcher::sys_metrics`).
     #[test]
+    #[cfg(windows)]
     fn sys_metrics_request_envelope_shape() {
         let req = json!({
             "kind": "sys",
@@ -275,6 +298,7 @@ mod tests {
     /// roundtrip cleanly. Locks the framing (u32 header + ≤ 2 KiB
     /// payload) the daemon path depends on.
     #[tokio::test]
+    #[cfg(windows)]
     async fn sys_metrics_roundtrip_over_duplex() {
         let (mut a, mut b) = duplex(64 * 1024);
         let request = json!({

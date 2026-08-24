@@ -1,4 +1,6 @@
 //! Named-pipe client for `memento-daemon` (REQ-DAEMON-002/004/006).
+
+#![cfg(windows)]
 //!
 //! The client owns:
 //! - env gating (`MEMENTO_NO_DAEMON` short-circuits the whole transport to
@@ -23,8 +25,8 @@ use std::time::Duration;
 
 use interprocess::os::windows::named_pipe::{pipe_mode, tokio::PipeStream};
 use memento_mcp::{
-    daemon::{DEFAULT_PIPE_TIMEOUT, pipe_name},
     frame,
+    pipe_naming::{DEFAULT_PIPE_TIMEOUT, pipe_name},
     handshake::{Hello, PROTOCOL_VERSION, Role, Welcome},
 };
 use thiserror::Error;

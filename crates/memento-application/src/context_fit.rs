@@ -92,6 +92,7 @@ impl AppService {
         ctx: &TenantContext,
         req: ContextFitRequest,
     ) -> Result<ContextFitResult, DomainError> {
+        self.ensure_bound_tenant(ctx)?;
         // REQ-OBS-003: the context-fit span carries the retrieval context
         // (chore_id slot stays empty — context-fit is not chore-tracked).
         let span = crate::context_fit_span(ctx, req.workspace_id);

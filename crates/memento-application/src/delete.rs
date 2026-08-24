@@ -25,6 +25,7 @@ impl AppService {
         ctx: &TenantContext,
         scope: DeleteScope,
     ) -> Result<DeleteReport, DomainError> {
+        self.ensure_bound_tenant(ctx)?;
         let report = match &scope {
             DeleteScope::Chunk { id } => {
                 // Tenant-scoped existence check first (REQ-ML-002 scenario 2).
