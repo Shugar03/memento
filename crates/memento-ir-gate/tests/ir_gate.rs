@@ -139,6 +139,7 @@ async fn ingest_corpus(app: &AppService, ts: &TempStore) {
                 text,
                 doc_id: None,
                 metadata: Some(Metadata(meta)),
+                workspace_id: None,
             },
         )
         .await

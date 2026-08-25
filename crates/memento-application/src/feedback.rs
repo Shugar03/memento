@@ -97,6 +97,7 @@ mod tests {
                     text: "la memoria es un río".into(),
                     doc_id: None,
                     metadata: None,
+                    workspace_id: None,
                 },
             )
             .await
@@ -142,6 +143,7 @@ mod tests {
                     text: "otra memoria más".into(),
                     doc_id: None,
                     metadata: None,
+                    workspace_id: None,
                 },
             )
             .await
@@ -170,6 +172,7 @@ mod tests {
                     text: "recuerdo persistente".into(),
                     doc_id: None,
                     metadata: None,
+                    workspace_id: None,
                 },
             )
             .await

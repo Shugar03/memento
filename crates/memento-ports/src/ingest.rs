@@ -15,6 +15,9 @@ pub struct IngestTextRequest {
     /// Auto-generated when `None`.
     pub doc_id: Option<DocId>,
     pub metadata: Option<Metadata>,
+    /// Target workspace (REQ-WS-003). `None` → process-bound default.
+    #[serde(default)]
+    pub workspace_id: Option<memento_domain::WorkspaceId>,
 }
 
 /// Request for `IngestPort::ingest_document` (REQ-MC-002).
@@ -25,6 +28,9 @@ pub struct IngestDocumentRequest {
     /// Auto-generated when `None`.
     pub doc_id: Option<DocId>,
     pub metadata: Option<Metadata>,
+    /// Target workspace (REQ-WS-003). `None` → process-bound default.
+    #[serde(default)]
+    pub workspace_id: Option<memento_domain::WorkspaceId>,
 }
 
 /// Outcome of an ingest operation: produced chunk ids plus the chore id that

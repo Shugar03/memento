@@ -762,6 +762,7 @@ mod tenant_guard_tests {
                     text: "forbidden".into(),
                     doc_id: None,
                     metadata: None,
+                    workspace_id: None,
                 },
             )
             .await
@@ -870,6 +871,7 @@ mod events_tests {
             text: text.to_string(),
             doc_id: None,
             metadata: None,
+            workspace_id: None,
         }
     }
 

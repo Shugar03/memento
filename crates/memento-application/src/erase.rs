@@ -141,6 +141,7 @@ mod tests {
                 text: "la memoria es un río que debe poder borrarse por completo".into(),
                 doc_id: None,
                 metadata: None,
+                workspace_id: None,
             },
         )
         .await

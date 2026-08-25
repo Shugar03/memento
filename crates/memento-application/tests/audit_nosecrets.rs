@@ -83,6 +83,7 @@ async fn audit_lines_have_shape_and_never_carry_content_or_secrets() {
                 text: format!("{PLANTED_CONTENT} y tambien {PLANTED_TOKEN}"),
                 doc_id: None,
                 metadata: None,
+                workspace_id: None,
             },
         )
         .await
@@ -94,6 +95,7 @@ async fn audit_lines_have_shape_and_never_carry_content_or_secrets() {
             source_hint: SourceKind::Markdown,
             doc_id: None,
             metadata: None,
+            workspace_id: None,
         },
     )
     .await

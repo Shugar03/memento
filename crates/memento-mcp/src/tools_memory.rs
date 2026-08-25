@@ -197,6 +197,9 @@ struct IngestTextParams {
     doc_id: Option<String>,
     #[serde(default)]
     metadata: Option<serde_json::Map<String, Value>>,
+    /// Optional target workspace (REQ-WS-003). Default = process-bound.
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -209,6 +212,9 @@ struct IngestDocumentParams {
     doc_id: Option<String>,
     #[serde(default)]
     metadata: Option<serde_json::Map<String, Value>>,
+    /// Optional target workspace (REQ-WS-003). Default = process-bound.
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -287,6 +293,7 @@ impl McpServer {
         Parameters(p): Parameters<IngestTextParams>,
     ) -> Result<Json<IngestOutput>, ToolError> {
         let doc_id = p.doc_id.as_deref().map(parse_doc).transpose()?;
+        let workspace_id = p.workspace_id.as_deref().map(parse_workspace).transpose()?;
         let result = self
             .app
             .ingest_text(
@@ -295,6 +302,7 @@ impl McpServer {
                     text: p.text,
                     doc_id,
                     metadata: p.metadata.map(Metadata),
+                    workspace_id,
                 },
             )
             .await?;
@@ -318,6 +326,7 @@ impl McpServer {
             })?;
         let source_hint = parse_source(&p.source)?;
         let doc_id = p.doc_id.as_deref().map(parse_doc).transpose()?;
+        let workspace_id = p.workspace_id.as_deref().map(parse_workspace).transpose()?;
         let result = self
             .app
             .ingest_document(
@@ -327,6 +336,7 @@ impl McpServer {
                     source_hint,
                     doc_id,
                     metadata: p.metadata.map(Metadata),
+                    workspace_id,
                 },
             )
             .await?;

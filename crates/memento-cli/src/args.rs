@@ -21,6 +21,7 @@ pub fn build(i18n: &I18n) -> Command {
         .arg(root_arg(i18n))
         .arg(locale_arg(i18n))
         .subcommand(tenant_cmd(i18n))
+        .subcommand(workspace_cmd(i18n))
         .subcommand(ingest_cmd(i18n))
         .subcommand(search_cmd(i18n))
         .subcommand(get_chunk_cmd(i18n))
@@ -178,6 +179,24 @@ fn tenant_cmd(i18n: &I18n) -> Command {
         .subcommand(Command::new("sweep").about(i18n.t(StringKey::CliHelpTenantSweep)))
 }
 
+// ---- workspace -------------------------------------------------------------
+
+fn workspace_cmd(i18n: &I18n) -> Command {
+    Command::new("workspace")
+        .about(i18n.t(StringKey::CliHelpWorkspace))
+        .subcommand(
+            Command::new("create")
+                .about(i18n.t(StringKey::CliHelpWorkspaceCreate))
+                .arg(
+                    Arg::new("name")
+                        .long("name")
+                        .value_name("NAME")
+                        .help(i18n.t(StringKey::CliHelpWorkspaceNameArg)),
+                ),
+        )
+        .subcommand(Command::new("list").about(i18n.t(StringKey::CliHelpWorkspaceList)))
+}
+
 // ---- ingest ----------------------------------------------------------------
 
 fn ingest_cmd(i18n: &I18n) -> Command {
@@ -192,7 +211,8 @@ fn ingest_cmd(i18n: &I18n) -> Command {
                         .long("doc-id")
                         .value_name("UUID")
                         .help(i18n.t(StringKey::CliHelpDocArg)),
-                ),
+                )
+                .arg(workspace_arg(i18n)),
         )
         .subcommand(
             Command::new("document")
@@ -214,7 +234,8 @@ fn ingest_cmd(i18n: &I18n) -> Command {
                         .long("doc-id")
                         .value_name("UUID")
                         .help(i18n.t(StringKey::CliHelpDocArg)),
-                ),
+                )
+                .arg(workspace_arg(i18n)),
         )
         .subcommand(
             Command::new("bulk")
@@ -224,7 +245,8 @@ fn ingest_cmd(i18n: &I18n) -> Command {
                         .value_name("DIR")
                         .required(true)
                         .help(i18n.t(StringKey::CliHelpDirArg)),
-                ),
+                )
+                .arg(workspace_arg(i18n)),
         )
 }
 

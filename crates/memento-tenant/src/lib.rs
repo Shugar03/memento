@@ -18,10 +18,12 @@
 mod credentials;
 mod resolver;
 mod rotate;
+mod workspaces;
 
 pub use credentials::{ApiKey, CredentialStore, SECRET_LEN, TOKEN_PREFIX, hash_key};
 pub use resolver::{BearerToken, TenantResolverImpl, default_workspace_id};
 pub use rotate::rotate_token;
+pub use workspaces::{WorkspaceRecord, WorkspaceRegistry};
 
 use memento_domain::DomainError;
 use std::path::PathBuf;

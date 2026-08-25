@@ -239,6 +239,7 @@ mod tests {
                 text: "la memoria exportada viaja con su procedencia completa".into(),
                 doc_id: None,
                 metadata: None,
+                workspace_id: None,
             },
         )
         .await
@@ -329,6 +330,7 @@ mod tests {
                 text: "la memoria no viaja con secretos memo_abc123".into(),
                 doc_id: None,
                 metadata: None,
+                workspace_id: None,
             },
         )
         .await

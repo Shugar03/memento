@@ -91,6 +91,7 @@ fn measure_cold_start(ctx: &TenantContext) {
                 text: common::doc_text(5, 1),
                 doc_id: None,
                 metadata: None,
+                workspace_id: None,
             },
         ));
     } // seed app dropped: store closed before the measured open
@@ -138,6 +139,7 @@ fn bench_search(c: &mut Criterion) {
                         text: doc.clone(),
                         doc_id: None,
                         metadata: None,
+                        workspace_id: None,
                     },
                 ))
                 .expect("corpus ingest succeeds");

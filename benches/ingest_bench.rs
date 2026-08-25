@@ -48,6 +48,7 @@ fn bench_ingest(c: &mut Criterion) {
                         text,
                         doc_id: None,
                         metadata: None,
+                        workspace_id: None,
                     },
                 ))
             });
@@ -91,6 +92,7 @@ fn bench_ingest(c: &mut Criterion) {
                         text,
                         doc_id: None,
                         metadata: None,
+                        workspace_id: None,
                     },
                 ));
                 std::hint::black_box(res.expect("ingest succeeds"));

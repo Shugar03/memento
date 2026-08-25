@@ -79,6 +79,10 @@ pub enum StringKey {
     CliHelpTenantCreate,
     CliHelpIngest,
     CliHelpSearch,
+    CliHelpWorkspace,
+    CliHelpWorkspaceCreate,
+    CliHelpWorkspaceList,
+    CliHelpWorkspaceNameArg,
     CliHelpRotateToken,
     CliHelpDelete,
     CliHelpContextFit,
@@ -140,7 +144,7 @@ pub enum StringKey {
 
 impl StringKey {
     /// Every key, so tests can prove ES/EN parity.
-    pub const ALL: [StringKey; 99] = [
+    pub const ALL: [StringKey; 103] = [
         StringKey::McpToolSearchDesc,
         StringKey::McpToolIngestTextDesc,
         StringKey::McpToolIngestDocumentDesc,
@@ -185,6 +189,10 @@ impl StringKey {
         StringKey::CliHelpTenantCreate,
         StringKey::CliHelpIngest,
         StringKey::CliHelpSearch,
+        StringKey::CliHelpWorkspace,
+        StringKey::CliHelpWorkspaceCreate,
+        StringKey::CliHelpWorkspaceList,
+        StringKey::CliHelpWorkspaceNameArg,
         StringKey::CliHelpRotateToken,
         StringKey::CliHelpDelete,
         StringKey::CliHelpContextFit,
@@ -327,6 +335,10 @@ pub fn es(key: StringKey) -> &'static str {
         }
         StringKey::CliHelpIngest => "Ingresa texto o documentos en memoria.",
         StringKey::CliHelpSearch => "Busca en la memoria del workspace.",
+        StringKey::CliHelpWorkspace => "Crea y lista workspaces de aislamiento.",
+        StringKey::CliHelpWorkspaceCreate => "Crea un workspace nuevo (UUID).",
+        StringKey::CliHelpWorkspaceList => "Lista el workspace por defecto y los registrados.",
+        StringKey::CliHelpWorkspaceNameArg => "Nombre opcional del workspace.",
         StringKey::CliHelpRotateToken => {
             "Rota el token del tenant (requiere reiniciar el proceso)."
         }
@@ -493,6 +505,10 @@ pub fn en(key: StringKey) -> &'static str {
         StringKey::CliHelpTenantCreate => "Create a tenant and print the access token once.",
         StringKey::CliHelpIngest => "Ingest text or documents into memory.",
         StringKey::CliHelpSearch => "Search workspace memory.",
+        StringKey::CliHelpWorkspace => "Create and list isolation workspaces.",
+        StringKey::CliHelpWorkspaceCreate => "Create a new workspace (UUID).",
+        StringKey::CliHelpWorkspaceList => "List the default workspace and registered ones.",
+        StringKey::CliHelpWorkspaceNameArg => "Optional workspace name.",
         StringKey::CliHelpRotateToken => "Rotate the tenant token (process restart required).",
         StringKey::CliHelpDelete => "Permanently delete memory.",
         StringKey::CliHelpContextFit => "Pack context from the most relevant chunks.",

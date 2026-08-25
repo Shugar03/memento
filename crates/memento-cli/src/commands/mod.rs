@@ -16,6 +16,7 @@ pub mod memory;
 pub mod observability;
 pub mod stats;
 pub mod tenant;
+pub mod workspace;
 
 use memento_domain::{DomainError, TenantId};
 use memento_i18n::{I18n, StringKey};

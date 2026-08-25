@@ -78,6 +78,7 @@ async fn ingest(app: &AppService, ts: &TempStore, text: &str) {
             text: text.to_string(),
             doc_id: None,
             metadata: None,
+            workspace_id: None,
         },
     )
     .await
@@ -316,6 +317,7 @@ async fn worker_and_daemon_coexist_on_one_store_both_respond() {
                 text: "memoria del daemon; el worker corre en paralelo sin corromperla".into(),
                 doc_id: None,
                 metadata: None,
+                workspace_id: None,
             },
         )
         .await

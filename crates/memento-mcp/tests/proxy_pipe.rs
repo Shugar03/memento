@@ -176,6 +176,7 @@ async fn stdio_proxy_search_returns_identical_ids_and_scores_as_direct() {
                 text: "the quick brown fox jumps over the lazy dog daemon proxy".into(),
                 doc_id: None,
                 metadata: None,
+                workspace_id: None,
             },
         )
         .await
